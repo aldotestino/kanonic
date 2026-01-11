@@ -419,3 +419,20 @@ export const createApi = <T extends Record<string, Endpoint>>({
 export const createEndpoints = <T extends Record<string, Endpoint>>(
   endpoints: T
 ) => endpoints;
+
+export const ApiService = <T extends Record<string, Endpoint>>(endpoints: T) =>
+  class ApiServiceClass {
+    protected readonly client: ApiClient<T>;
+
+    constructor(options: {
+      baseUrl: string;
+      headers?: Record<string, string>;
+      auth?: Auth;
+    }) {
+      this.client = createApi({ ...options, endpoints });
+    }
+
+    get api() {
+      return this.client;
+    }
+  };

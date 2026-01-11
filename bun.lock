@@ -24,6 +24,7 @@
       "name": "todos",
       "dependencies": {
         "kanonic": "workspace:*",
+        "neverthrow": "^8.2.0",
         "zod": "^4.3.5",
       },
       "devDependencies": {
