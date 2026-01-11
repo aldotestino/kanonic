@@ -80,6 +80,7 @@ class TodoClient extends ApiService(endpoints) {
 
 const todoClient = new TodoClient("https://jsonplaceholder.typicode.com");
 
-const enrichedPost = await todoClient.getEnrichedPost(1);
-
-console.log(enrichedPost.unwrapOr(null));
+await todoClient.getEnrichedPost(1).match(
+  (enrichedPost) => console.log(enrichedPost),
+  (error) => console.error(error)
+);
