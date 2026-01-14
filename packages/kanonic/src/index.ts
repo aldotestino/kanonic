@@ -8,19 +8,19 @@ import { err, ok, Result, ResultAsync, safeTry } from "neverthrow";
 import { z } from "zod";
 
 import {
-  ApiError,
-  FetchError,
-  InputValidationError,
-  OutputValidationError,
-  ParseError,
+    ApiError,
+    FetchError,
+    InputValidationError,
+    OutputValidationError,
+    ParseError,
 } from "./errors";
 
 export type {
-  ApiError,
-  FetchError,
-  InputValidationError,
-  OutputValidationError,
-  ParseError,
+    ApiError,
+    FetchError,
+    InputValidationError,
+    OutputValidationError,
+    ParseError
 };
 
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -113,7 +113,7 @@ const buildUrl = ({
   query?: Record<string, unknown>;
   params?: Record<string, unknown>;
 }) => {
-  let url = new URL(`${baseUrl.replace(/\/$/, "")}${path}`);
+  const url = new URL(`${baseUrl.replace(/\/$/, "")}${path}`);
 
   if (query) {
     Object.entries(query)
@@ -438,12 +438,7 @@ export const ApiService = <T extends Record<string, Endpoint>>(endpoints: T) =>
   class ApiServiceClass {
     protected readonly client: ApiClient<T>;
 
-    constructor(options: {
-      baseUrl: string;
-      headers?: Record<string, string>;
-      auth?: Auth;
-      validateOutput?: boolean;
-    }) {
+    constructor(options: Omit<Parameters<typeof createApi>[0], "endpoints">) {
       this.client = createApi({ ...options, endpoints });
     }
 

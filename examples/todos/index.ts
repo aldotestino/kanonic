@@ -1,5 +1,5 @@
 // oxlint-disable require-hook
-import { createEndpoints, ApiService } from "kanonic";
+import { ApiService, createEndpoints } from "kanonic";
 import { ok, safeTry } from "neverthrow";
 import { z } from "zod";
 
