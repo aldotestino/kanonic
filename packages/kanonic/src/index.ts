@@ -323,12 +323,14 @@ export const createApi = <T extends Record<string, Endpoint>>({
   headers,
   auth,
   validateOutput = true,
+  validateInput = true,
 }: {
   baseUrl: string;
   endpoints: T;
   headers?: Record<string, string>;
   auth?: Auth;
   validateOutput?: boolean;
+  validateInput?: boolean;
 }): ApiClient<T> => {
   const finalHeaders = buildHeaders({ auth, headers });
 
@@ -341,50 +343,51 @@ export const createApi = <T extends Record<string, Endpoint>>({
       query?: Record<string, unknown>;
     }) =>
       safeTry(async function* endpointFn() {
-        // Validate input if schema exists (only for non-GET)
-        let validatedInput;
-        if (
-          endpoint.method !== "GET" &&
-          "input" in endpoint &&
-          endpoint.input
-        ) {
-          const inputResult = endpoint.input.safeParse(options?.input);
-          if (!inputResult.success) {
-            return err(
-              new InputValidationError({
-                message: "Invalid input",
-                zodError: inputResult.error,
-              })
-            );
+        let validatedInput = options?.input;
+        if (validateInput) {
+          if (
+            endpoint.method !== "GET" &&
+            "input" in endpoint &&
+            endpoint.input
+          ) {
+            const inputResult = endpoint.input.safeParse(options?.input);
+            if (!inputResult.success) {
+              return err(
+                new InputValidationError({
+                  message: "Invalid input",
+                  zodError: inputResult.error,
+                }),
+              );
+            }
+            validatedInput = inputResult.data;
           }
-          validatedInput = inputResult.data;
         }
 
         // Validate params if schema exists
-        let validatedParams: Record<string, unknown> | undefined;
-        if (endpoint.params) {
+        let validatedParams: Record<string, unknown> | undefined = options?.params as Record<string, unknown> | undefined;
+        if (validateInput && endpoint.params) {
           const paramsResult = endpoint.params.safeParse(options?.params);
           if (!paramsResult.success) {
             return err(
               new InputValidationError({
                 message: "Invalid params",
                 zodError: paramsResult.error,
-              })
+              }),
             );
           }
           validatedParams = paramsResult.data as Record<string, unknown>;
         }
 
         // Validate query if schema exists
-        let validatedQuery: Record<string, unknown> | undefined;
-        if (endpoint.query) {
+        let validatedQuery: Record<string, unknown> | undefined = options?.query as Record<string, unknown> | undefined;
+        if (validateInput && endpoint.query) {
           const queryResult = endpoint.query.safeParse(options?.query);
           if (!queryResult.success) {
             return err(
               new InputValidationError({
                 message: "Invalid query",
                 zodError: queryResult.error,
-              })
+              }),
             );
           }
           validatedQuery = queryResult.data as Record<string, unknown>;
