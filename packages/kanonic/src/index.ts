@@ -8,19 +8,19 @@ import { err, ok, Result, ResultAsync, safeTry } from "neverthrow";
 import { z } from "zod";
 
 import {
-  ApiError,
-  FetchError,
-  InputValidationError,
-  OutputValidationError,
-  ParseError,
+    ApiError,
+    FetchError,
+    InputValidationError,
+    OutputValidationError,
+    ParseError,
 } from "./errors";
 
 export type {
-  ApiError,
-  FetchError,
-  InputValidationError,
-  OutputValidationError,
-  ParseError,
+    ApiError,
+    FetchError,
+    InputValidationError,
+    OutputValidationError,
+    ParseError
 };
 
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -113,7 +113,7 @@ const buildUrl = ({
   query?: Record<string, unknown>;
   params?: Record<string, unknown>;
 }) => {
-  let url = new URL(`${baseUrl.replace(/\/$/, "")}${path}`);
+  const url = new URL(`${baseUrl.replace(/\/$/, "")}${path}`);
 
   if (query) {
     Object.entries(query)
@@ -192,7 +192,11 @@ const makeRequest = ({
     method,
   });
 
-const handleJsonResponse = (response: Response, outputSchema: z.ZodType) =>
+const handleJsonResponse = (
+  response: Response,
+  outputSchema: z.ZodType,
+  validateOutput: boolean,
+) =>
   safeTry(async function* handleJsonResponse() {
     const text = yield* await ResultAsync.fromPromise(
       response.text(),
@@ -209,6 +213,10 @@ const handleJsonResponse = (response: Response, outputSchema: z.ZodType) =>
     }
 
     const json = yield* safeJsonParse(text);
+
+    if (!validateOutput) {
+      return ok(json);
+    }
 
     const { success, data, error } = outputSchema.safeParse(json);
 
@@ -314,11 +322,15 @@ export const createApi = <T extends Record<string, Endpoint>>({
   endpoints,
   headers,
   auth,
+  validateOutput = true,
+  validateInput = true,
 }: {
   baseUrl: string;
   endpoints: T;
   headers?: Record<string, string>;
   auth?: Auth;
+  validateOutput?: boolean;
+  validateInput?: boolean;
 }): ApiClient<T> => {
   const finalHeaders = buildHeaders({ auth, headers });
 
@@ -331,50 +343,51 @@ export const createApi = <T extends Record<string, Endpoint>>({
       query?: Record<string, unknown>;
     }) =>
       safeTry(async function* endpointFn() {
-        // Validate input if schema exists (only for non-GET)
-        let validatedInput;
-        if (
-          endpoint.method !== "GET" &&
-          "input" in endpoint &&
-          endpoint.input
-        ) {
-          const inputResult = endpoint.input.safeParse(options?.input);
-          if (!inputResult.success) {
-            return err(
-              new InputValidationError({
-                message: "Invalid input",
-                zodError: inputResult.error,
-              })
-            );
+        let validatedInput = options?.input;
+        if (validateInput) {
+          if (
+            endpoint.method !== "GET" &&
+            "input" in endpoint &&
+            endpoint.input
+          ) {
+            const inputResult = endpoint.input.safeParse(options?.input);
+            if (!inputResult.success) {
+              return err(
+                new InputValidationError({
+                  message: "Invalid input",
+                  zodError: inputResult.error,
+                }),
+              );
+            }
+            validatedInput = inputResult.data;
           }
-          validatedInput = inputResult.data;
         }
 
         // Validate params if schema exists
-        let validatedParams: Record<string, unknown> | undefined;
-        if (endpoint.params) {
+        let validatedParams: Record<string, unknown> | undefined = options?.params as Record<string, unknown> | undefined;
+        if (validateInput && endpoint.params) {
           const paramsResult = endpoint.params.safeParse(options?.params);
           if (!paramsResult.success) {
             return err(
               new InputValidationError({
                 message: "Invalid params",
                 zodError: paramsResult.error,
-              })
+              }),
             );
           }
           validatedParams = paramsResult.data as Record<string, unknown>;
         }
 
         // Validate query if schema exists
-        let validatedQuery: Record<string, unknown> | undefined;
-        if (endpoint.query) {
+        let validatedQuery: Record<string, unknown> | undefined = options?.query as Record<string, unknown> | undefined;
+        if (validateInput && endpoint.query) {
           const queryResult = endpoint.query.safeParse(options?.query);
           if (!queryResult.success) {
             return err(
               new InputValidationError({
                 message: "Invalid query",
                 zodError: queryResult.error,
-              })
+              }),
             );
           }
           validatedQuery = queryResult.data as Record<string, unknown>;
@@ -405,7 +418,11 @@ export const createApi = <T extends Record<string, Endpoint>>({
 
         // Handle response with output validation
         const outputSchema = endpoint.output ?? z.unknown();
-        const result = yield* handleJsonResponse(response, outputSchema);
+        const result = yield* handleJsonResponse(
+          response,
+          outputSchema,
+          validateOutput,
+        );
 
         return ok(result);
       });
@@ -424,11 +441,7 @@ export const ApiService = <T extends Record<string, Endpoint>>(endpoints: T) =>
   class ApiServiceClass {
     protected readonly client: ApiClient<T>;
 
-    constructor(options: {
-      baseUrl: string;
-      headers?: Record<string, string>;
-      auth?: Auth;
-    }) {
+    constructor(options: Omit<Parameters<typeof createApi>[0], "endpoints">) {
       this.client = createApi({ ...options, endpoints });
     }
 
