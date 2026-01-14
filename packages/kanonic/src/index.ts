@@ -192,7 +192,11 @@ const makeRequest = ({
     method,
   });
 
-const handleJsonResponse = (response: Response, outputSchema: z.ZodType) =>
+const handleJsonResponse = (
+  response: Response,
+  outputSchema: z.ZodType,
+  validateOutput: boolean,
+) =>
   safeTry(async function* handleJsonResponse() {
     const text = yield* await ResultAsync.fromPromise(
       response.text(),
@@ -209,6 +213,10 @@ const handleJsonResponse = (response: Response, outputSchema: z.ZodType) =>
     }
 
     const json = yield* safeJsonParse(text);
+
+    if (!validateOutput) {
+      return ok(json);
+    }
 
     const { success, data, error } = outputSchema.safeParse(json);
 
@@ -314,11 +322,13 @@ export const createApi = <T extends Record<string, Endpoint>>({
   endpoints,
   headers,
   auth,
+  validateOutput = true,
 }: {
   baseUrl: string;
   endpoints: T;
   headers?: Record<string, string>;
   auth?: Auth;
+  validateOutput?: boolean;
 }): ApiClient<T> => {
   const finalHeaders = buildHeaders({ auth, headers });
 
@@ -405,7 +415,11 @@ export const createApi = <T extends Record<string, Endpoint>>({
 
         // Handle response with output validation
         const outputSchema = endpoint.output ?? z.unknown();
-        const result = yield* handleJsonResponse(response, outputSchema);
+        const result = yield* handleJsonResponse(
+          response,
+          outputSchema,
+          validateOutput,
+        );
 
         return ok(result);
       });
@@ -428,6 +442,7 @@ export const ApiService = <T extends Record<string, Endpoint>>(endpoints: T) =>
       baseUrl: string;
       headers?: Record<string, string>;
       auth?: Auth;
+      validateOutput?: boolean;
     }) {
       this.client = createApi({ ...options, endpoints });
     }
