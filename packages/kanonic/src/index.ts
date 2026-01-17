@@ -236,17 +236,16 @@ const parseErrorResponse = <E>(
     return new ApiError<E>({ statusCode, text });
   }
 
-  // Try to parse JSON
-  let json: unknown;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    // JSON parse failed - fallback to text only
-    return new ApiError<E>({ statusCode, text });
+  const json = safeJsonParse(text).mapErr(
+    (_) => new ApiError<E>({ statusCode, text })
+  );
+
+  if (json.isErr()) {
+    return json.error;
   }
 
   // Validate with zod schema
-  const result = errorSchema.safeParse(json);
+  const result = errorSchema.safeParse(json.value);
   if (result.success) {
     // Validation succeeded - include parsed data
     return new ApiError<E>({
@@ -450,13 +449,15 @@ const processStreamChunk = (
     return dataContent;
   }
 
-  // Always parse JSON when output schema exists
-  let processedData: unknown;
-  try {
-    processedData = JSON.parse(dataContent);
-  } catch (error) {
-    // Skip invalid JSON chunks
-    console.warn("Failed to parse JSON chunk:", error);
+  const processedData = safeJsonParse(dataContent).match(
+    (data) => data,
+    (_) => {
+      console.warn("Failed to parse JSON chunk");
+      return null;
+    }
+  );
+
+  if (!processedData) {
     return null;
   }
 
@@ -468,7 +469,7 @@ const processStreamChunk = (
       console.warn("Validation failed for chunk:", result.error);
       return null;
     }
-    processedData = result.data;
+    return result.data;
   }
 
   return processedData;
