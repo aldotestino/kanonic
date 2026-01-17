@@ -350,3 +350,569 @@ describe("Error Handling", () => {
     }
   });
 });
+
+// Streaming - Basic Tests (8 tests)
+describe("Streaming - Basic", () => {
+  test("should parse SSE format", async () => {
+    const { url } = createMockServer(() => {
+      const stream = createSSEStream(["hello", "world"]);
+      return new Response(stream);
+    });
+
+    const endpoints = createEndpoints({
+      stream: {
+        method: "GET",
+        path: "/stream",
+        stream: { enabled: true },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    const result = await api.stream();
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      const chunks = await collectStreamChunks(result.value);
+      expect(chunks).toEqual(["hello", "world"]);
+    }
+  });
+
+  test("should return ReadableStream<string> without schema", async () => {
+    const { url } = createMockServer(() => {
+      const stream = createSSEStream(["test"]);
+      return new Response(stream);
+    });
+
+    const endpoints = createEndpoints({
+      stream: {
+        method: "GET",
+        path: "/stream",
+        stream: { enabled: true },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    const result = await api.stream();
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      expect(result.value).toBeInstanceOf(ReadableStream);
+      const chunks = await collectStreamChunks(result.value);
+      expect(chunks[0]).toBe("test");
+      expect(typeof chunks[0]).toBe("string");
+    }
+  });
+
+  test("should handle multiple chunks", async () => {
+    const { url } = createMockServer(() => {
+      const stream = createSSEStream(["one", "two", "three", "four"]);
+      return new Response(stream);
+    });
+
+    const endpoints = createEndpoints({
+      stream: {
+        method: "GET",
+        path: "/stream",
+        stream: { enabled: true },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    const result = await api.stream();
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      const chunks = await collectStreamChunks(result.value);
+      expect(chunks).toHaveLength(4);
+      expect(chunks).toEqual(["one", "two", "three", "four"]);
+    }
+  });
+
+  test("should skip empty data lines", async () => {
+    const { url } = createMockServer(() => {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode("data: hello\n\n"));
+          controller.enqueue(encoder.encode("data: \n\n")); // Empty
+          controller.enqueue(encoder.encode("data: world\n\n"));
+          controller.close();
+        },
+      });
+      return new Response(stream);
+    });
+
+    const endpoints = createEndpoints({
+      stream: {
+        method: "GET",
+        path: "/stream",
+        stream: { enabled: true },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    const result = await api.stream();
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      const chunks = await collectStreamChunks(result.value);
+      expect(chunks).toEqual(["hello", "world"]);
+    }
+  });
+
+  test("should skip [DONE] markers", async () => {
+    const { url } = createMockServer(() => {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode("data: message1\n\n"));
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.enqueue(encoder.encode("data: message2\n\n"));
+          controller.close();
+        },
+      });
+      return new Response(stream);
+    });
+
+    const endpoints = createEndpoints({
+      stream: {
+        method: "GET",
+        path: "/stream",
+        stream: { enabled: true },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    const result = await api.stream();
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      const chunks = await collectStreamChunks(result.value);
+      expect(chunks).toEqual(["message1", "message2"]);
+    }
+  });
+
+  test("should buffer incomplete lines", async () => {
+    const { url } = createMockServer(() => {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        start(controller) {
+          // Send partial line
+          controller.enqueue(encoder.encode("data: hel"));
+          controller.enqueue(encoder.encode("lo\n\n"));
+          controller.close();
+        },
+      });
+      return new Response(stream);
+    });
+
+    const endpoints = createEndpoints({
+      stream: {
+        method: "GET",
+        path: "/stream",
+        stream: { enabled: true },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    const result = await api.stream();
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      const chunks = await collectStreamChunks(result.value);
+      expect(chunks).toEqual(["hello"]);
+    }
+  });
+
+  test("should handle stream cancellation", async () => {
+    const { url } = createMockServer(() => {
+      const stream = createSSEStream(["one", "two", "three"]);
+      return new Response(stream);
+    });
+
+    const endpoints = createEndpoints({
+      stream: {
+        method: "GET",
+        path: "/stream",
+        stream: { enabled: true },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    const result = await api.stream();
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      const reader = result.value.getReader();
+      const { value } = await reader.read();
+      expect(value).toBe("one");
+
+      // Cancel the stream
+      await reader.cancel();
+
+      // Stream should be done
+      const { done } = await reader.read();
+      expect(done).toBe(true);
+    }
+  });
+
+  test("should return ApiError before streaming on error", async () => {
+    const { url } = createMockServer(() =>
+      new Response("Not Found", { status: 404 })
+    );
+
+    const endpoints = createEndpoints({
+      stream: {
+        method: "GET",
+        path: "/stream",
+        stream: { enabled: true },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    const result = await api.stream();
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error._tag).toBe("ApiError");
+      expect((result.error as ApiError).statusCode).toBe(404);
+    }
+  });
+});
+
+// Streaming - Typed with Schema Tests (10 tests)
+describe("Streaming - Typed with Schema", () => {
+  test("should return ReadableStream<T> with schema", async () => {
+    const { url } = createMockServer(() => {
+      const stream = createSSEStream([{ id: 1, msg: "hello" }]);
+      return new Response(stream);
+    });
+
+    const endpoints = createEndpoints({
+      stream: {
+        method: "GET",
+        output: z.object({ id: z.number(), msg: z.string() }),
+        path: "/stream",
+        stream: { enabled: true },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    const result = await api.stream();
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      const chunks = await collectStreamChunks(result.value);
+      expect(chunks).toHaveLength(1);
+      expect(chunks[0]?.id).toBe(1);
+      expect(chunks[0]?.msg).toBe("hello");
+    }
+  });
+
+  test("should parse JSON chunks with object schema", async () => {
+    const { url } = createMockServer(() => {
+      const stream = createSSEStream([
+        { id: 1, text: "first" },
+        { id: 2, text: "second" },
+      ]);
+      return new Response(stream);
+    });
+
+    const endpoints = createEndpoints({
+      stream: {
+        method: "GET",
+        output: z.object({ id: z.number(), text: z.string() }),
+        path: "/stream",
+        stream: { enabled: true },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    const result = await api.stream();
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      const chunks = await collectStreamChunks(result.value);
+      expect(chunks).toHaveLength(2);
+      expect(chunks[0]?.id).toBe(1);
+      expect(chunks[1]?.id).toBe(2);
+    }
+  });
+
+  test("should validate chunks when validateOutput=true", async () => {
+    const { url } = createMockServer(() => {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode('data: {"id":1,"msg":"valid"}\n\n')
+          );
+          controller.enqueue(
+            encoder.encode('data: {"id":"invalid","msg":"bad"}\n\n')
+          );
+          controller.enqueue(
+            encoder.encode('data: {"id":2,"msg":"valid"}\n\n')
+          );
+          controller.close();
+        },
+      });
+      return new Response(stream);
+    });
+
+    const endpoints = createEndpoints({
+      stream: {
+        method: "GET",
+        output: z.object({ id: z.number(), msg: z.string() }),
+        path: "/stream",
+        stream: { enabled: true },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints, validateOutput: true });
+    const result = await api.stream();
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      const chunks = await collectStreamChunks(result.value);
+      // Invalid chunk should be skipped
+      expect(chunks).toHaveLength(2);
+      expect(chunks[0]?.id).toBe(1);
+      expect(chunks[1]?.id).toBe(2);
+    }
+  });
+
+  test("should skip validation when validateOutput=false", async () => {
+    const { url } = createMockServer(() => {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode('data: {"id":"not-a-number","msg":"test"}\n\n')
+          );
+          controller.close();
+        },
+      });
+      return new Response(stream);
+    });
+
+    const endpoints = createEndpoints({
+      stream: {
+        method: "GET",
+        output: z.object({ id: z.number(), msg: z.string() }),
+        path: "/stream",
+        stream: { enabled: true },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints, validateOutput: false });
+    const result = await api.stream();
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      const chunks = await collectStreamChunks(result.value);
+      expect(chunks).toHaveLength(1);
+      // Should receive unvalidated data
+      expect((chunks[0] as { id: unknown }).id).toBe("not-a-number");
+    }
+  });
+
+  test("should skip invalid JSON chunks with warning", async () => {
+    const { url } = createMockServer(() => {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode('data: {"id":1,"msg":"valid"}\n\n')
+          );
+          controller.enqueue(encoder.encode("data: {invalid json}\n\n"));
+          controller.enqueue(
+            encoder.encode('data: {"id":2,"msg":"valid"}\n\n')
+          );
+          controller.close();
+        },
+      });
+      return new Response(stream);
+    });
+
+    const endpoints = createEndpoints({
+      stream: {
+        method: "GET",
+        output: z.object({ id: z.number(), msg: z.string() }),
+        path: "/stream",
+        stream: { enabled: true },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    const result = await api.stream();
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      const chunks = await collectStreamChunks(result.value);
+      // Invalid JSON chunk should be skipped
+      expect(chunks).toHaveLength(2);
+      expect(chunks[0]?.id).toBe(1);
+      expect(chunks[1]?.id).toBe(2);
+    }
+  });
+
+  test("should skip invalid validation chunks with warning", async () => {
+    const { url } = createMockServer(() => {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode('data: {"id":1,"msg":"valid"}\n\n')
+          );
+          controller.enqueue(encoder.encode('data: {"id":2}\n\n')); // Missing msg
+          controller.enqueue(
+            encoder.encode('data: {"id":3,"msg":"valid"}\n\n')
+          );
+          controller.close();
+        },
+      });
+      return new Response(stream);
+    });
+
+    const endpoints = createEndpoints({
+      stream: {
+        method: "GET",
+        output: z.object({ id: z.number(), msg: z.string() }),
+        path: "/stream",
+        stream: { enabled: true },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints, validateOutput: true });
+    const result = await api.stream();
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      const chunks = await collectStreamChunks(result.value);
+      // Invalid chunk should be skipped
+      expect(chunks).toHaveLength(2);
+      expect(chunks[0]?.id).toBe(1);
+      expect(chunks[1]?.id).toBe(3);
+    }
+  });
+
+  test("should continue stream after invalid chunk", async () => {
+    const { url } = createMockServer(() => {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"valid":true}\n\n'));
+          controller.enqueue(encoder.encode("data: invalid\n\n"));
+          controller.enqueue(encoder.encode('data: {"valid":true}\n\n'));
+          controller.enqueue(encoder.encode("data: {bad json\n\n"));
+          controller.enqueue(encoder.encode('data: {"valid":true}\n\n'));
+          controller.close();
+        },
+      });
+      return new Response(stream);
+    });
+
+    const endpoints = createEndpoints({
+      stream: {
+        method: "GET",
+        output: z.object({ valid: z.boolean() }),
+        path: "/stream",
+        stream: { enabled: true },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    const result = await api.stream();
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      const chunks = await collectStreamChunks(result.value);
+      // Should get 3 valid chunks, 2 invalid skipped
+      expect(chunks).toHaveLength(3);
+      expect(chunks.every((c) => c?.valid === true)).toBe(true);
+    }
+  });
+
+  test("should handle z.string() schema", async () => {
+    const { url } = createMockServer(() => {
+      const stream = createSSEStream(['"hello"', '"world"']);
+      return new Response(stream);
+    });
+
+    const endpoints = createEndpoints({
+      stream: {
+        method: "GET",
+        output: z.string(),
+        path: "/stream",
+        stream: { enabled: true },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    const result = await api.stream();
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      const chunks = await collectStreamChunks(result.value);
+      expect(chunks).toEqual(["hello", "world"]);
+    }
+  });
+
+  test("should handle z.number() schema", async () => {
+    const { url } = createMockServer(() => {
+      const stream = createSSEStream(["42", "100", "999"]);
+      return new Response(stream);
+    });
+
+    const endpoints = createEndpoints({
+      stream: {
+        method: "GET",
+        output: z.number(),
+        path: "/stream",
+        stream: { enabled: true },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    const result = await api.stream();
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      const chunks = await collectStreamChunks(result.value);
+      expect(chunks).toEqual([42, 100, 999]);
+    }
+  });
+
+  test("should handle nested schemas", async () => {
+    const { url } = createMockServer(() => {
+      const stream = createSSEStream([
+        { user: { id: 1, name: "Alice" }, timestamp: 123 },
+        { user: { id: 2, name: "Bob" }, timestamp: 456 },
+      ]);
+      return new Response(stream);
+    });
+
+    const endpoints = createEndpoints({
+      stream: {
+        method: "GET",
+        output: z.object({
+          timestamp: z.number(),
+          user: z.object({ id: z.number(), name: z.string() }),
+        }),
+        path: "/stream",
+        stream: { enabled: true },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    const result = await api.stream();
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      const chunks = await collectStreamChunks(result.value);
+      expect(chunks).toHaveLength(2);
+      expect(chunks[0]?.user.name).toBe("Alice");
+      expect(chunks[1]?.user.name).toBe("Bob");
+    }
+  });
+});
