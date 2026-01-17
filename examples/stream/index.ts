@@ -5,14 +5,14 @@ const endpoints = createEndpoints({
   stream: {
     method: "GET",
     output: z.object({
-      testing: z.boolean(),
-      sse_dev: z.string(),
       msg: z.string(),
       now: z.string(),
+      sse_dev: z.string(),
+      testing: z.boolean(),
     }),
     path: "/test",
     query: z.object({
-      interval: z.int().gt(0),
+      interval: z.int(),
     }),
     stream: {
       enabled: true,
