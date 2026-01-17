@@ -28,7 +28,7 @@ const userSchema = z.object({
 const endpoints = createEndpoints({
   createUser: {
     input: z.object({
-      email: z.string().email(),
+      email: z.email(),
       name: z.string(),
     }),
     method: "POST",

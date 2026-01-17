@@ -23,6 +23,7 @@ const endpoints = createEndpoints({
 const api = createApi({
   baseUrl: "https://sse.dev",
   endpoints,
+  errorSchema: z.object({ message: z.string() }),
 });
 
 const myStream = await api.stream({

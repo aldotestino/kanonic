@@ -11,7 +11,7 @@ import {
   OutputValidationError,
   ParseError,
 } from "./errors";
-import { createApi, createEndpoints } from "./index";
+import { ApiService, createApi, createEndpoints } from "./index";
 import {
   collectStreamChunks,
   createMockServer,
@@ -1266,6 +1266,50 @@ describe("Error Schema Validation", () => {
       expect(apiError.statusCode).toBe(400);
       expect(apiError.data).toBeDefined();
       expect(apiError.data?.message).toBe("Stream failed");
+    }
+  });
+
+  test("should work with ApiService class and errorSchema", async () => {
+    const { url } = createMockServer(() =>
+      Response.json(
+        { code: "SERVICE_ERROR", message: "Service failed" },
+        { status: 400 }
+      )
+    );
+
+    const testEndpoints = createEndpoints({
+      getData: {
+        method: "GET",
+        output: z.object({ data: z.string() }),
+        path: "/data",
+      },
+    });
+
+    const testErrorSchema = z.object({
+      code: z.string(),
+      message: z.string(),
+    });
+
+    class TestService extends ApiService(testEndpoints, testErrorSchema) {
+      constructor(baseUrl: string) {
+        super({ baseUrl });
+      }
+    }
+
+    const service = new TestService(url);
+    const result = await service.api.getData();
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error._tag).toBe("ApiError");
+      const apiError = result.error as ApiError<{
+        code: string;
+        message: string;
+      }>;
+      expect(apiError.statusCode).toBe(400);
+      expect(apiError.data).toBeDefined();
+      expect(apiError.data?.message).toBe("Service failed");
+      expect(apiError.data?.code).toBe("SERVICE_ERROR");
     }
   });
 });

@@ -636,16 +636,34 @@ export const createEndpoints = <T extends Record<string, Endpoint>>(
   endpoints: T
 ) => endpoints;
 
+/**
+ * Creates an API service base class with typed endpoints and optional error schema.
+ *
+ * @example
+ * ```ts
+ * const errorSchema = z.object({ message: z.string() });
+ *
+ * class MyService extends ApiService(endpoints, errorSchema) {
+ *   constructor(baseUrl: string) {
+ *     super({ baseUrl });
+ *   }
+ * }
+ * ```
+ */
 export const ApiService = <T extends Record<string, Endpoint>, E = unknown>(
-  endpoints: T
+  endpoints: T,
+  errorSchema?: z.ZodType<E>
 ) =>
   class ApiServiceClass {
     protected readonly client: ApiClient<T, E>;
 
     constructor(
-      options: Omit<Parameters<typeof createApi<T, E>>[0], "endpoints">
+      options: Omit<
+        Parameters<typeof createApi<T, E>>[0],
+        "endpoints" | "errorSchema"
+      >
     ) {
-      this.client = createApi({ ...options, endpoints });
+      this.client = createApi({ ...options, endpoints, errorSchema });
     }
 
     get api() {

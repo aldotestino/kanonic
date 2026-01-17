@@ -125,9 +125,16 @@ For more complex scenarios, you can wrap the client in an `ApiService`. This is 
 ```typescript
 import { ApiService } from "kanonic";
 import { ok, safeTry } from "neverthrow";
+import { z } from "zod";
 import { endpoints } from "./endpoints";
 
-class TodoService extends ApiService(endpoints) {
+// Optional: Define error schema
+const errorSchema = z.object({
+  message: z.string(),
+  code: z.string().optional(),
+});
+
+class TodoService extends ApiService(endpoints, errorSchema) {
   constructor(baseUrl: string) {
     super({ baseUrl });
   }
@@ -142,7 +149,14 @@ class TodoService extends ApiService(endpoints) {
     });
   }
 }
+
+const service = new TodoService("https://api.example.com");
+const result = await service.getEnrichedTodo(1);
 ```
+
+**With typed errors:**
+
+When you pass an `errorSchema` to `ApiService`, all API calls through `service.api` will have typed error responses. The error schema is optional - if not provided, it works like before.
 
 ### Streaming (SSE)
 
