@@ -11,7 +11,13 @@ import {
   OutputValidationError,
   ParseError,
 } from "./errors";
-import { ApiService, createApi, createEndpoints } from "./index";
+import {
+  ApiService,
+  createApi,
+  createEndpoints,
+  validateAllErrors,
+  validateClientErrors,
+} from "./index";
 import {
   collectStreamChunks,
   createMockServer,
@@ -1034,7 +1040,12 @@ describe("Error Schema Validation", () => {
       },
     });
 
-    const api = createApi({ baseUrl: url, endpoints, errorSchema });
+    const api = createApi({
+      baseUrl: url,
+      endpoints,
+      errorSchema,
+      shouldValidateError: validateAllErrors,
+    });
     const result = await api.getTodo();
 
     expect(result.isErr()).toBe(true);
@@ -1144,8 +1155,8 @@ describe("Error Schema Validation", () => {
     }
   });
 
-  test("should use default validation (4xx only)", async () => {
-    // Test with 400 - should validate
+  test("should use default validation (no validation by default)", async () => {
+    // Test with 400 - should NOT validate by default
     const { url: url400 } = createMockServer(() =>
       Response.json(
         { code: "BAD_REQUEST", message: "Invalid request" },
@@ -1175,8 +1186,8 @@ describe("Error Schema Validation", () => {
         message: string;
       }>;
       expect(apiError.statusCode).toBe(400);
-      expect(apiError.data).toBeDefined();
-      expect(apiError.data?.code).toBe("BAD_REQUEST");
+      expect(apiError.data).toBeUndefined();
+      expect(apiError.text).toContain("BAD_REQUEST");
     }
 
     // Test with 500 - should NOT validate
@@ -1253,7 +1264,12 @@ describe("Error Schema Validation", () => {
       },
     });
 
-    const api = createApi({ baseUrl: url, endpoints, errorSchema });
+    const api = createApi({
+      baseUrl: url,
+      endpoints,
+      errorSchema,
+      shouldValidateError: validateClientErrors,
+    });
     const result = await api.streamData();
 
     expect(result.isErr()).toBe(true);
@@ -1292,7 +1308,7 @@ describe("Error Schema Validation", () => {
 
     class TestService extends ApiService(testEndpoints, testErrorSchema) {
       constructor(baseUrl: string) {
-        super({ baseUrl });
+        super({ baseUrl, shouldValidateError: validateClientErrors });
       }
     }
 
