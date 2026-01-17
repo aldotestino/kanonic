@@ -29,8 +29,5 @@ jobs:
       - name: Run linter
         run: bun run check
 
-      - name: Run tests
-        run: bun test
-
       - name: Run tests with coverage
         run: bun test --coverage
