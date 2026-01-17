@@ -13,7 +13,7 @@ import { z } from "zod";
 // Define the error response schema
 const apiErrorSchema = z.object({
   code: z.string(),
-  details: z.record(z.unknown()).optional(),
+  details: z.record(z.string(), z.unknown()).optional(),
   message: z.string(),
 });
 

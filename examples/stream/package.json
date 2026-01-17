@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "module": "index.ts",
+  "scripts": {
+    "start": "bun run index.ts"
+  },
   "dependencies": {
     "kanonic": "workspace:*",
     "neverthrow": "^8.2.0",
