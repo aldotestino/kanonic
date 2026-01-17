@@ -342,56 +342,7 @@ const extractDataLine = (line: string): string | null => {
   return dataContent;
 };
 
-// Determine if a Zod schema requires JSON parsing
-// Primitives like z.string(), z.number(), z.coerce.int() don't need parsing
-// Objects, arrays, and complex types do
-const needsJsonParse = (schema: z.ZodType): boolean => {
-  let currentSchema: z.ZodType = schema;
-
-  // Unwrap wrapper schemas (optional, nullable, default, effects/coerce)
-  // Use _def to access inner types since ZodEffects and others aren't exported in v4
-  while (true) {
-    const def = currentSchema._def as {
-      innerType?: z.ZodType;
-      schema?: z.ZodType;
-      typeName?: string;
-    };
-
-    if (
-      (def.typeName === "ZodOptional" ||
-        def.typeName === "ZodNullable" ||
-        def.typeName === "ZodDefault") &&
-      def.innerType
-    ) {
-      currentSchema = def.innerType;
-      continue;
-    }
-
-    if (def.typeName === "ZodEffects" && def.schema) {
-      currentSchema = def.schema;
-      continue;
-    }
-
-    break;
-  }
-
-  // Check if the unwrapped schema is a primitive using public instanceof checks
-  if (
-    currentSchema instanceof z.ZodString ||
-    currentSchema instanceof z.ZodNumber ||
-    currentSchema instanceof z.ZodBoolean ||
-    currentSchema instanceof z.ZodNull ||
-    currentSchema instanceof z.ZodUndefined ||
-    currentSchema instanceof z.ZodBigInt
-  ) {
-    return false;
-  }
-
-  // Everything else (objects, arrays, etc.) needs parsing
-  return true;
-};
-
-// Process a stream chunk: parse JSON if needed, validate if requested
+// Process a stream chunk: parse JSON and optionally validate
 // Returns null for invalid chunks (which will be skipped)
 const processStreamChunk = (
   dataContent: string,
@@ -403,17 +354,14 @@ const processStreamChunk = (
     return dataContent;
   }
 
-  let processedData: unknown = dataContent;
-
-  // Parse JSON if schema expects structured data
-  if (needsJsonParse(outputSchema)) {
-    try {
-      processedData = JSON.parse(dataContent);
-    } catch (error) {
-      // Skip invalid JSON chunks
-      console.warn("Failed to parse JSON chunk:", error);
-      return null;
-    }
+  // Always parse JSON when output schema exists
+  let processedData: unknown;
+  try {
+    processedData = JSON.parse(dataContent);
+  } catch (error) {
+    // Skip invalid JSON chunks
+    console.warn("Failed to parse JSON chunk:", error);
+    return null;
   }
 
   // Validate if validateOutput is enabled

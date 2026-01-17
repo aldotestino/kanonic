@@ -178,10 +178,11 @@ if (result.isOk()) {
 
 **How it works:**
 
-- **Primitive schemas** (`z.string()`, `z.number()`): Data is validated as-is, no JSON parsing
-- **Object/Array schemas**: Each SSE data line is parsed as JSON, then validated
+- **No output schema**: Returns `ReadableStream<string>` with raw SSE data
+- **Output schema provided**: Returns `ReadableStream<T>` where each line is parsed as JSON
+  - `validateOutput: true` (default): Parses and validates each chunk
+  - `validateOutput: false`: Parses JSON but skips validation
 - **Invalid chunks**: Automatically skipped with a warning (stream continues)
-- **Validation control**: Use `validateOutput: false` to skip validation for better performance
 
 ### Authentication
 
