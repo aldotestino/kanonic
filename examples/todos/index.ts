@@ -55,7 +55,12 @@ const endpoints = createEndpoints({
   },
 });
 
-class TodoClient extends ApiService(endpoints) {
+// Define error schema (optional)
+const errorSchema = z.object({
+  message: z.string(),
+});
+
+class TodoClient extends ApiService(endpoints, errorSchema) {
   constructor(baseUrl: string) {
     super({ baseUrl });
   }

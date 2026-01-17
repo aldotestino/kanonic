@@ -4,10 +4,16 @@ import type { z } from "zod";
 
 import { TaggedError } from "./tagged-error";
 
-// the api returned a status >= 400
-export class ApiError extends TaggedError("ApiError")<{
+/**
+ * API error returned when response status code >= 400.
+ * Contains statusCode, raw text, optional parsed data, and optional cause.
+ *
+ * @template T - The type of the parsed error data (when errorSchema provided)
+ */
+export class ApiError<T = unknown> extends TaggedError("ApiError")<{
   readonly statusCode: number;
   readonly text: string;
+  readonly data?: T;
   readonly cause?: unknown;
 }> {}
 

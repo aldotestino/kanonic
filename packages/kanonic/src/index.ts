@@ -23,6 +23,38 @@ export type {
   ParseError,
 };
 
+/**
+ * Preset validation function that validates only client errors (4xx status codes).
+ * This is the default behavior when errorSchema is provided but shouldValidateError is not.
+ *
+ * @example
+ * ```ts
+ * const api = createApi({
+ *   baseUrl: "https://api.example.com",
+ *   endpoints,
+ *   errorSchema: apiErrorSchema,
+ *   shouldValidateError: validateClientErrors
+ * });
+ * ```
+ */
+export const validateClientErrors = (statusCode: number) =>
+  statusCode >= 400 && statusCode < 500;
+
+/**
+ * Preset validation function that validates all error responses (both 4xx and 5xx).
+ *
+ * @example
+ * ```ts
+ * const api = createApi({
+ *   baseUrl: "https://api.example.com",
+ *   endpoints,
+ *   errorSchema: apiErrorSchema,
+ *   shouldValidateError: validateAllErrors
+ * });
+ * ```
+ */
+export const validateAllErrors = () => true;
+
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 // Base endpoint properties shared by all methods
@@ -48,9 +80,9 @@ type NonGetEndpoint = BaseEndpoint & {
 type Endpoint = GetEndpoint | NonGetEndpoint;
 
 // All possible API errors
-export type ApiErrors =
+export type ApiErrors<E = unknown> =
   | FetchError
-  | ApiError
+  | ApiError<E>
   | ParseError
   | OutputValidationError
   | InputValidationError;
@@ -86,16 +118,18 @@ type EndpointReturn<E extends Endpoint> =
     : EndpointOutput<E>;
 
 // Function signature: options required only if EndpointOptions is non-empty
-type EndpointFunction<E extends Endpoint> =
-  keyof EndpointOptions<E> extends never
-    ? () => ResultAsync<EndpointReturn<E>, ApiErrors>
-    : (
-        options: EndpointOptions<E>
-      ) => ResultAsync<EndpointReturn<E>, ApiErrors>;
+type EndpointFunction<
+  E extends Endpoint,
+  ErrType = unknown,
+> = keyof EndpointOptions<E> extends never
+  ? () => ResultAsync<EndpointReturn<E>, ApiErrors<ErrType>>
+  : (
+      options: EndpointOptions<E>
+    ) => ResultAsync<EndpointReturn<E>, ApiErrors<ErrType>>;
 
 // The final API client type
-export type ApiClient<T extends Record<string, Endpoint>> = {
-  [K in keyof T]: EndpointFunction<T[K]>;
+export type ApiClient<T extends Record<string, Endpoint>, E = unknown> = {
+  [K in keyof T]: EndpointFunction<T[K], E>;
 };
 
 type Auth =
@@ -182,6 +216,49 @@ const safeJsonParse = Result.fromThrowable(
     })
 );
 
+const parseErrorResponse = <E>(
+  text: string,
+  statusCode: number,
+  errorSchema?: z.ZodType<E>,
+  shouldValidateError?: (statusCode: number) => boolean
+): ApiError<E> => {
+  // No schema provided - return with just text (current behavior)
+  if (!errorSchema) {
+    return new ApiError<E>({ statusCode, text });
+  }
+
+  // Default: don't validate errors unless explicitly requested
+  const shouldValidate = shouldValidateError
+    ? shouldValidateError(statusCode)
+    : false;
+
+  if (!shouldValidate) {
+    return new ApiError<E>({ statusCode, text });
+  }
+
+  const json = safeJsonParse(text).mapErr(
+    (_) => new ApiError<E>({ statusCode, text })
+  );
+
+  if (json.isErr()) {
+    return json.error;
+  }
+
+  // Validate with zod schema
+  const result = errorSchema.safeParse(json.value);
+  if (result.success) {
+    // Validation succeeded - include parsed data
+    return new ApiError<E>({
+      data: result.data,
+      statusCode,
+      text,
+    });
+  }
+
+  // Validation failed - fallback to text only
+  return new ApiError<E>({ statusCode, text });
+};
+
 const makeRequest = ({
   method,
   url,
@@ -199,10 +276,12 @@ const makeRequest = ({
     method,
   });
 
-const handleJsonResponse = (
+const handleJsonResponse = <E>(
   response: Response,
   outputSchema: z.ZodType,
-  validateOutput: boolean
+  validateOutput: boolean,
+  errorSchema?: z.ZodType<E>,
+  shouldValidateError?: (statusCode: number) => boolean
 ) =>
   safeTry(async function* handleJsonResponse() {
     const text = yield* await ResultAsync.fromPromise(
@@ -216,7 +295,14 @@ const handleJsonResponse = (
     );
 
     if (!response.ok) {
-      return err(new ApiError({ statusCode: response.status, text: text }));
+      return err(
+        parseErrorResponse(
+          text,
+          response.status,
+          errorSchema,
+          shouldValidateError
+        )
+      );
     }
 
     const json = yield* safeJsonParse(text);
@@ -239,10 +325,12 @@ const handleJsonResponse = (
     return ok(data);
   });
 
-const handleStreamResponse = (
+const handleStreamResponse = <E>(
   response: Response,
   outputSchema?: z.ZodType,
-  validateOutput = true
+  validateOutput = true,
+  errorSchema?: z.ZodType<E>,
+  shouldValidateError?: (statusCode: number) => boolean
 ) =>
   safeTry(async function* handleStreamResponse() {
     if (!response.ok) {
@@ -255,7 +343,14 @@ const handleStreamResponse = (
               error instanceof Error ? error.message : "Something went wrong",
           })
       );
-      return err(new ApiError({ statusCode: response.status, text }));
+      return err(
+        parseErrorResponse(
+          text,
+          response.status,
+          errorSchema,
+          shouldValidateError
+        )
+      );
     }
 
     if (!response.body) {
@@ -354,13 +449,15 @@ const processStreamChunk = (
     return dataContent;
   }
 
-  // Always parse JSON when output schema exists
-  let processedData: unknown;
-  try {
-    processedData = JSON.parse(dataContent);
-  } catch (error) {
-    // Skip invalid JSON chunks
-    console.warn("Failed to parse JSON chunk:", error);
+  const processedData = safeJsonParse(dataContent).match(
+    (data) => data,
+    (_) => {
+      console.warn("Failed to parse JSON chunk");
+      return null;
+    }
+  );
+
+  if (!processedData) {
     return null;
   }
 
@@ -372,19 +469,49 @@ const processStreamChunk = (
       console.warn("Validation failed for chunk:", result.error);
       return null;
     }
-    processedData = result.data;
+    return result.data;
   }
 
   return processedData;
 };
 
-export const createApi = <T extends Record<string, Endpoint>>({
+/**
+ * Creates a type-safe API client from endpoint definitions.
+ *
+ * Configuration options:
+ * - baseUrl: Base URL for all API requests
+ * - endpoints: Endpoint definitions created with createEndpoints
+ * - headers: Optional default headers for all requests
+ * - auth: Optional authentication configuration (bearer or basic)
+ * - validateOutput: Whether to validate response data (default: true)
+ * - validateInput: Whether to validate request data (default: true)
+ * - errorSchema: Optional Zod schema for error response validation
+ * - shouldValidateError: Function to control which status codes to validate (default: 4xx only)
+ *
+ * @example
+ * ```ts
+ * const errorSchema = z.object({
+ *   message: z.string(),
+ *   code: z.string().optional()
+ * });
+ *
+ * const api = createApi({
+ *   baseUrl: "https://api.example.com",
+ *   endpoints,
+ *   errorSchema,
+ *   shouldValidateError: (code) => code >= 400 && code < 500
+ * });
+ * ```
+ */
+export const createApi = <T extends Record<string, Endpoint>, E = unknown>({
   baseUrl,
   endpoints,
   headers,
   auth,
   validateOutput = true,
   validateInput = true,
+  errorSchema,
+  shouldValidateError,
 }: {
   baseUrl: string;
   endpoints: T;
@@ -392,10 +519,12 @@ export const createApi = <T extends Record<string, Endpoint>>({
   auth?: Auth;
   validateOutput?: boolean;
   validateInput?: boolean;
-}): ApiClient<T> => {
+  errorSchema?: z.ZodType<E>;
+  shouldValidateError?: (statusCode: number) => boolean;
+}): ApiClient<T, E> => {
   const finalHeaders = buildHeaders({ auth, headers });
 
-  const client = {} as ApiClient<T>;
+  const client = {} as ApiClient<T, E>;
 
   for (const [name, endpoint] of Object.entries(endpoints)) {
     // oxlint-disable complexity
@@ -478,7 +607,9 @@ export const createApi = <T extends Record<string, Endpoint>>({
           const stream = yield* handleStreamResponse(
             response,
             endpoint.output,
-            validateOutput
+            validateOutput,
+            errorSchema,
+            shouldValidateError
           );
           return ok(stream);
         }
@@ -488,7 +619,9 @@ export const createApi = <T extends Record<string, Endpoint>>({
         const result = yield* handleJsonResponse(
           response,
           outputSchema,
-          validateOutput
+          validateOutput,
+          errorSchema,
+          shouldValidateError
         );
 
         return ok(result);
@@ -504,12 +637,34 @@ export const createEndpoints = <T extends Record<string, Endpoint>>(
   endpoints: T
 ) => endpoints;
 
-export const ApiService = <T extends Record<string, Endpoint>>(endpoints: T) =>
+/**
+ * Creates an API service base class with typed endpoints and optional error schema.
+ *
+ * @example
+ * ```ts
+ * const errorSchema = z.object({ message: z.string() });
+ *
+ * class MyService extends ApiService(endpoints, errorSchema) {
+ *   constructor(baseUrl: string) {
+ *     super({ baseUrl });
+ *   }
+ * }
+ * ```
+ */
+export const ApiService = <T extends Record<string, Endpoint>, E = unknown>(
+  endpoints: T,
+  errorSchema?: z.ZodType<E>
+) =>
   class ApiServiceClass {
-    protected readonly client: ApiClient<T>;
+    protected readonly client: ApiClient<T, E>;
 
-    constructor(options: Omit<Parameters<typeof createApi>[0], "endpoints">) {
-      this.client = createApi({ ...options, endpoints });
+    constructor(
+      options: Omit<
+        Parameters<typeof createApi<T, E>>[0],
+        "endpoints" | "errorSchema"
+      >
+    ) {
+      this.client = createApi({ ...options, endpoints, errorSchema });
     }
 
     get api() {
