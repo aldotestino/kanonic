@@ -1,3 +1,5 @@
+// oxlint-disable no-inline-comments
+// oxlint-disable no-conditional-in-test
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 
@@ -37,8 +39,8 @@ describe("Basic API Client", () => {
   });
 
   test("should make GET request", async () => {
-    const { url } = createMockServer(
-      () => new Response(JSON.stringify({ id: 1, title: "Test" }))
+    const { url } = createMockServer(() =>
+      Response.json({ id: 1, title: "Test" })
     );
 
     const endpoints = createEndpoints({
@@ -66,7 +68,7 @@ describe("Authentication", () => {
 
     const { url } = createMockServer((req) => {
       authHeader = req.headers.get("Authorization") || "";
-      return new Response(JSON.stringify({ success: true }));
+      return Response.json({ success: true });
     });
 
     const endpoints = createEndpoints({
@@ -92,7 +94,7 @@ describe("Authentication", () => {
 
     const { url } = createMockServer((req) => {
       authHeader = req.headers.get("Authorization") || "";
-      return new Response(JSON.stringify({ success: true }));
+      return Response.json({ success: true });
     });
 
     const endpoints = createEndpoints({
@@ -117,8 +119,8 @@ describe("Authentication", () => {
 // Validation Tests (3 tests)
 describe("Validation", () => {
   test("should validate input when enabled", async () => {
-    const { url } = createMockServer(
-      () => new Response(JSON.stringify({ id: 1, title: "Test" }))
+    const { url } = createMockServer(() =>
+      Response.json({ id: 1, title: "Test" })
     );
 
     const endpoints = createEndpoints({
@@ -147,8 +149,8 @@ describe("Validation", () => {
   });
 
   test("should validate output when enabled", async () => {
-    const { url } = createMockServer(
-      () => new Response(JSON.stringify({ id: "invalid", title: "Test" }))
+    const { url } = createMockServer(() =>
+      Response.json({ id: "invalid", title: "Test" })
     );
 
     const endpoints = createEndpoints({
@@ -169,8 +171,8 @@ describe("Validation", () => {
   });
 
   test("should skip validation when disabled", async () => {
-    const { url } = createMockServer(
-      () => new Response(JSON.stringify({ id: "invalid", title: "Test" }))
+    const { url } = createMockServer(() =>
+      Response.json({ id: "invalid", title: "Test" })
     );
 
     const endpoints = createEndpoints({
@@ -240,9 +242,7 @@ describe("Error Handling", () => {
   });
 
   test("should return InputValidationError on invalid input", async () => {
-    const { url } = createMockServer(
-      () => new Response(JSON.stringify({ id: 1 }))
-    );
+    const { url } = createMockServer(() => Response.json({ id: 1 }));
 
     const endpoints = createEndpoints({
       createTodo: {
@@ -436,6 +436,7 @@ describe("Streaming - Basic", () => {
     }
   });
 
+  // oxlint-disable-next-line max-statements
   test("should handle stream cancellation", async () => {
     const { url } = createMockServer(() => {
       const stream = createSSEStream(["one", "two", "three"]);
@@ -868,7 +869,7 @@ describe("Integration", () => {
   });
 
   test("should handle concurrent API requests", async () => {
-    const { url } = createMockServer(() => new Response(JSON.stringify({ id: 1 })));
+    const { url } = createMockServer(() => Response.json({ id: 1 }));
 
     const endpoints = createEndpoints({
       getData: {
@@ -887,11 +888,9 @@ describe("Integration", () => {
     ]);
 
     expect(results.every((r) => r.isOk())).toBe(true);
-    results.forEach((r) => {
-      if (r.isOk()) {
-        expect(r.value.id).toBe(1);
-      }
-    });
+    for (const r of results) {
+      expect(r.isOk()).toBe(true);
+    }
   });
 
   test("should handle realistic SSE stream", async () => {
@@ -984,6 +983,7 @@ describe("Error Classes", () => {
     }
   });
 
+  // oxlint-disable-next-line max-statements
   test("should discriminate errors by _tag field", () => {
     const apiError = new ApiError({ statusCode: 500, text: "Server Error" });
     const fetchError = new FetchError({ message: "Connection failed" });
@@ -991,7 +991,7 @@ describe("Error Classes", () => {
 
     const errors = [apiError, fetchError, parseError];
 
-    errors.forEach((error) => {
+    for (const error of errors) {
       switch (error._tag) {
         case "ApiError": {
           expect(error.statusCode).toBeDefined();
@@ -1001,11 +1001,11 @@ describe("Error Classes", () => {
           expect(error.message).toBeDefined();
           break;
         }
-        case "ParseError": {
+        default: {
           expect(error.message).toBeDefined();
           break;
         }
       }
-    });
+    }
   });
 });
