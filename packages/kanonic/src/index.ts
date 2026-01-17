@@ -8,19 +8,19 @@ import { err, ok, Result, ResultAsync, safeTry } from "neverthrow";
 import { z } from "zod";
 
 import {
-    ApiError,
-    FetchError,
-    InputValidationError,
-    OutputValidationError,
-    ParseError,
+  ApiError,
+  FetchError,
+  InputValidationError,
+  OutputValidationError,
+  ParseError,
 } from "./errors";
 
 export type {
-    ApiError,
-    FetchError,
-    InputValidationError,
-    OutputValidationError,
-    ParseError
+  ApiError,
+  FetchError,
+  InputValidationError,
+  OutputValidationError,
+  ParseError,
 };
 
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -74,9 +74,16 @@ type IsStreamEnabled<E extends Endpoint> = E["stream"] extends { enabled: true }
   ? true
   : false;
 
-// Return type: ReadableStream<string> when streaming, otherwise the output type
+// Determine stream element type based on output schema
+type StreamElementType<E extends Endpoint> = E["output"] extends z.ZodType
+  ? z.infer<E["output"]>
+  : string;
+
+// Return type: ReadableStream<T> when streaming (typed if output schema exists), otherwise the output type
 type EndpointReturn<E extends Endpoint> =
-  IsStreamEnabled<E> extends true ? ReadableStream<string> : EndpointOutput<E>;
+  IsStreamEnabled<E> extends true
+    ? ReadableStream<StreamElementType<E>>
+    : EndpointOutput<E>;
 
 // Function signature: options required only if EndpointOptions is non-empty
 type EndpointFunction<E extends Endpoint> =
@@ -195,7 +202,7 @@ const makeRequest = ({
 const handleJsonResponse = (
   response: Response,
   outputSchema: z.ZodType,
-  validateOutput: boolean,
+  validateOutput: boolean
 ) =>
   safeTry(async function* handleJsonResponse() {
     const text = yield* await ResultAsync.fromPromise(
@@ -232,7 +239,11 @@ const handleJsonResponse = (
     return ok(data);
   });
 
-const handleStreamResponse = (response: Response) =>
+const handleStreamResponse = (
+  response: Response,
+  outputSchema?: z.ZodType,
+  validateOutput = true
+) =>
   safeTry(async function* handleStreamResponse() {
     if (!response.ok) {
       const text = yield* await ResultAsync.fromPromise(
@@ -259,7 +270,7 @@ const handleStreamResponse = (response: Response) =>
     const decoder = new TextDecoder();
     let buffer = "";
 
-    const stream = new ReadableStream<string>({
+    const stream = new ReadableStream<unknown>({
       cancel() {
         reader.cancel();
       },
@@ -271,9 +282,16 @@ const handleStreamResponse = (response: Response) =>
           if (buffer.trim()) {
             const lines = buffer.split("\n");
             for (const line of lines) {
-              const data = extractDataLine(line);
-              if (data !== null) {
-                controller.enqueue(data);
+              const dataContent = extractDataLine(line);
+              if (dataContent !== null) {
+                const processedData = processStreamChunk(
+                  dataContent,
+                  outputSchema,
+                  validateOutput
+                );
+                if (processedData !== null) {
+                  controller.enqueue(processedData);
+                }
               }
             }
           }
@@ -287,9 +305,16 @@ const handleStreamResponse = (response: Response) =>
         buffer = lines.pop() ?? "";
 
         for (const line of lines) {
-          const data = extractDataLine(line);
-          if (data !== null) {
-            controller.enqueue(data);
+          const dataContent = extractDataLine(line);
+          if (dataContent !== null) {
+            const processedData = processStreamChunk(
+              dataContent,
+              outputSchema,
+              validateOutput
+            );
+            if (processedData !== null) {
+              controller.enqueue(processedData);
+            }
           }
         }
       },
@@ -317,6 +342,42 @@ const extractDataLine = (line: string): string | null => {
   return dataContent;
 };
 
+// Process a stream chunk: parse JSON and optionally validate
+// Returns null for invalid chunks (which will be skipped)
+const processStreamChunk = (
+  dataContent: string,
+  outputSchema?: z.ZodType,
+  validateOutput = true
+): unknown => {
+  // If no output schema provided, return raw string
+  if (!outputSchema) {
+    return dataContent;
+  }
+
+  // Always parse JSON when output schema exists
+  let processedData: unknown;
+  try {
+    processedData = JSON.parse(dataContent);
+  } catch (error) {
+    // Skip invalid JSON chunks
+    console.warn("Failed to parse JSON chunk:", error);
+    return null;
+  }
+
+  // Validate if validateOutput is enabled
+  if (validateOutput) {
+    const result = outputSchema.safeParse(processedData);
+    if (!result.success) {
+      // Skip invalid chunks
+      console.warn("Validation failed for chunk:", result.error);
+      return null;
+    }
+    processedData = result.data;
+  }
+
+  return processedData;
+};
+
 export const createApi = <T extends Record<string, Endpoint>>({
   baseUrl,
   endpoints,
@@ -337,6 +398,7 @@ export const createApi = <T extends Record<string, Endpoint>>({
   const client = {} as ApiClient<T>;
 
   for (const [name, endpoint] of Object.entries(endpoints)) {
+    // oxlint-disable complexity
     const endpointFn = (options?: {
       input?: unknown;
       params?: Record<string, unknown>;
@@ -344,27 +406,27 @@ export const createApi = <T extends Record<string, Endpoint>>({
     }) =>
       safeTry(async function* endpointFn() {
         let validatedInput = options?.input;
-        if (validateInput) {
-          if (
-            endpoint.method !== "GET" &&
-            "input" in endpoint &&
-            endpoint.input
-          ) {
-            const inputResult = endpoint.input.safeParse(options?.input);
-            if (!inputResult.success) {
-              return err(
-                new InputValidationError({
-                  message: "Invalid input",
-                  zodError: inputResult.error,
-                }),
-              );
-            }
-            validatedInput = inputResult.data;
+        if (
+          validateInput &&
+          endpoint.method !== "GET" &&
+          "input" in endpoint &&
+          endpoint.input
+        ) {
+          const inputResult = endpoint.input.safeParse(options?.input);
+          if (!inputResult.success) {
+            return err(
+              new InputValidationError({
+                message: "Invalid input",
+                zodError: inputResult.error,
+              })
+            );
           }
+          validatedInput = inputResult.data;
         }
 
         // Validate params if schema exists
-        let validatedParams: Record<string, unknown> | undefined = options?.params as Record<string, unknown> | undefined;
+        let validatedParams: Record<string, unknown> | undefined =
+          options?.params as Record<string, unknown> | undefined;
         if (validateInput && endpoint.params) {
           const paramsResult = endpoint.params.safeParse(options?.params);
           if (!paramsResult.success) {
@@ -372,14 +434,15 @@ export const createApi = <T extends Record<string, Endpoint>>({
               new InputValidationError({
                 message: "Invalid params",
                 zodError: paramsResult.error,
-              }),
+              })
             );
           }
           validatedParams = paramsResult.data as Record<string, unknown>;
         }
 
         // Validate query if schema exists
-        let validatedQuery: Record<string, unknown> | undefined = options?.query as Record<string, unknown> | undefined;
+        let validatedQuery: Record<string, unknown> | undefined =
+          options?.query as Record<string, unknown> | undefined;
         if (validateInput && endpoint.query) {
           const queryResult = endpoint.query.safeParse(options?.query);
           if (!queryResult.success) {
@@ -387,7 +450,7 @@ export const createApi = <T extends Record<string, Endpoint>>({
               new InputValidationError({
                 message: "Invalid query",
                 zodError: queryResult.error,
-              }),
+              })
             );
           }
           validatedQuery = queryResult.data as Record<string, unknown>;
@@ -412,7 +475,11 @@ export const createApi = <T extends Record<string, Endpoint>>({
 
         // Check if streaming is enabled
         if (endpoint.stream?.enabled) {
-          const stream = yield* handleStreamResponse(response);
+          const stream = yield* handleStreamResponse(
+            response,
+            endpoint.output,
+            validateOutput
+          );
           return ok(stream);
         }
 
@@ -421,7 +488,7 @@ export const createApi = <T extends Record<string, Endpoint>>({
         const result = yield* handleJsonResponse(
           response,
           outputSchema,
-          validateOutput,
+          validateOutput
         );
 
         return ok(result);

@@ -7,7 +7,7 @@ A lightweight, type-safe API client generator for TypeScript. Kanonic uses [Zod]
 - **🚀 Fully Type-Safe**: Automatically infer request and response types from your schemas.
 - **🛡️ Schema Validation**: Validate inputs (body, query, params) and outputs at runtime using Zod.
 - **🛡️ Functional Error Handling**: No more `try/catch`. All methods return a `ResultAsync` containing either the data or a tagged error.
-- **📡 Streaming Support**: Built-in support for Server-Sent Events (SSE).
+- **📡 Streaming Support**: Built-in support for Server-Sent Events (SSE) with type-safe, validated streams.
 - **🏗️ Service-Oriented**: Easy to extend with a base `ApiService` class for shared logic.
 - **🏷️ Tagged Errors**: Rich, serializable error objects with metadata.
 
@@ -117,7 +117,9 @@ class TodoService extends ApiService(endpoints) {
 
 ### Streaming (SSE)
 
-Kanonic makes handling Server-Sent Events easy.
+Kanonic makes handling Server-Sent Events easy with full type safety and validation support.
+
+#### Basic Streaming (String)
 
 ```typescript
 const endpoints = createEndpoints({
@@ -142,6 +144,45 @@ if (result.isOk()) {
   }
 }
 ```
+
+#### Typed Streaming with Validation
+
+Add an `output` schema to get typed, validated streams:
+
+```typescript
+const endpoints = createEndpoints({
+  streamMessages: {
+    method: "GET",
+    path: "/messages",
+    stream: { enabled: true },
+    output: z.object({
+      id: z.string(),
+      content: z.string(),
+      timestamp: z.number(),
+    }),
+  },
+});
+
+const api = createApi({ baseUrl: "...", endpoints });
+const result = await api.streamMessages();
+
+if (result.isOk()) {
+  const stream = result.value; // ReadableStream<{ id: string, content: string, timestamp: number }>
+
+  for await (const message of stream) {
+    // message is fully typed!
+    console.log(message.content);
+  }
+}
+```
+
+**How it works:**
+
+- **No output schema**: Returns `ReadableStream<string>` with raw SSE data
+- **Output schema provided**: Returns `ReadableStream<T>` where each line is parsed as JSON
+  - `validateOutput: true` (default): Parses and validates each chunk
+  - `validateOutput: false`: Parses JSON but skips validation
+- **Invalid chunks**: Automatically skipped with a warning (stream continues)
 
 ### Authentication
 
@@ -174,4 +215,3 @@ Kanonic provides several built-in tagged error classes based on the `TaggedError
 - `ParseError`: Returned when the response body cannot be parsed.
 - `InputValidationError`: Returned when the request data fails Zod validation.
 - `OutputValidationError`: Returned when the server response fails Zod validation.
-
