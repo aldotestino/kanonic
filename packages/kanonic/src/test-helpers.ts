@@ -22,7 +22,7 @@ export const createMockServer = (
 };
 
 // Create an SSE-formatted ReadableStream for testing
-export const createSSEStream = (chunks: Array<string | object>) => {
+export const createSSEStream = (chunks: (string | object)[]) => {
   const encoder = new TextEncoder();
 
   return new ReadableStream({
@@ -46,7 +46,7 @@ export const collectStreamChunks = async <T>(
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {break;}
       chunks.push(value);
     }
   } finally {
