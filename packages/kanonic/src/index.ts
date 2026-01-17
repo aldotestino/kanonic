@@ -346,15 +346,43 @@ const extractDataLine = (line: string): string | null => {
 // Primitives like z.string(), z.number(), z.coerce.int() don't need parsing
 // Objects, arrays, and complex types do
 const needsJsonParse = (schema: z.ZodType): boolean => {
-  const type = (schema._def as unknown as { typeName: string }).typeName;
+  let currentSchema: z.ZodType = schema;
 
-  // Primitives and coercions don't need JSON.parse
+  // Unwrap wrapper schemas (optional, nullable, default, effects/coerce)
+  // Use _def to access inner types since ZodEffects and others aren't exported in v4
+  while (true) {
+    const def = currentSchema._def as {
+      innerType?: z.ZodType;
+      schema?: z.ZodType;
+      typeName?: string;
+    };
+
+    if (
+      (def.typeName === "ZodOptional" ||
+        def.typeName === "ZodNullable" ||
+        def.typeName === "ZodDefault") &&
+      def.innerType
+    ) {
+      currentSchema = def.innerType;
+      continue;
+    }
+
+    if (def.typeName === "ZodEffects" && def.schema) {
+      currentSchema = def.schema;
+      continue;
+    }
+
+    break;
+  }
+
+  // Check if the unwrapped schema is a primitive using public instanceof checks
   if (
-    type === "ZodString" ||
-    type === "ZodNumber" ||
-    type === "ZodBoolean" ||
-    type === "ZodNull" ||
-    type === "ZodUndefined"
+    currentSchema instanceof z.ZodString ||
+    currentSchema instanceof z.ZodNumber ||
+    currentSchema instanceof z.ZodBoolean ||
+    currentSchema instanceof z.ZodNull ||
+    currentSchema instanceof z.ZodUndefined ||
+    currentSchema instanceof z.ZodBigInt
   ) {
     return false;
   }
