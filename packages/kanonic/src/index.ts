@@ -227,10 +227,10 @@ const parseErrorResponse = <E>(
     return new ApiError<E>({ statusCode, text });
   }
 
-  // Default: only validate 4xx (client errors)
+  // Default: don't validate errors unless explicitly requested
   const shouldValidate = shouldValidateError
     ? shouldValidateError(statusCode)
-    : statusCode >= 400 && statusCode < 500;
+    : false;
 
   if (!shouldValidate) {
     return new ApiError<E>({ statusCode, text });
