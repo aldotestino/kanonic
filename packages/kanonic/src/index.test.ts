@@ -1,5 +1,6 @@
 // oxlint-disable no-inline-comments
 // oxlint-disable no-conditional-in-test
+// oxlint-disable max-statements
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 
@@ -1006,6 +1007,265 @@ describe("Error Classes", () => {
           break;
         }
       }
+    }
+  });
+});
+
+// Error Schema Validation Tests
+describe("Error Schema Validation", () => {
+  const errorSchema = z.object({
+    code: z.string().optional(),
+    message: z.string(),
+  });
+
+  test("should parse and validate error response with schema", async () => {
+    const { url } = createMockServer(() =>
+      Response.json(
+        { code: "NOT_FOUND", message: "Resource not found" },
+        { status: 404 }
+      )
+    );
+
+    const endpoints = createEndpoints({
+      getTodo: {
+        method: "GET",
+        output: z.object({ id: z.number(), title: z.string() }),
+        path: "/todos/1",
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints, errorSchema });
+    const result = await api.getTodo();
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error._tag).toBe("ApiError");
+      const apiError = result.error as ApiError<{
+        code?: string;
+        message: string;
+      }>;
+      expect(apiError.statusCode).toBe(404);
+      expect(apiError.data).toBeDefined();
+      expect(apiError.data?.message).toBe("Resource not found");
+      expect(apiError.data?.code).toBe("NOT_FOUND");
+      expect(apiError.text).toContain("NOT_FOUND");
+    }
+  });
+
+  test("should fallback to text when error JSON parse fails", async () => {
+    const { url } = createMockServer(
+      () => new Response("Invalid JSON", { status: 500 })
+    );
+
+    const endpoints = createEndpoints({
+      getTodo: {
+        method: "GET",
+        output: z.object({ id: z.number(), title: z.string() }),
+        path: "/todos/1",
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints, errorSchema });
+    const result = await api.getTodo();
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error._tag).toBe("ApiError");
+      const apiError = result.error as ApiError<unknown>;
+      expect(apiError.statusCode).toBe(500);
+      expect(apiError.data).toBeUndefined();
+      expect(apiError.text).toBe("Invalid JSON");
+    }
+  });
+
+  test("should fallback to text when error validation fails", async () => {
+    const { url } = createMockServer(() =>
+      Response.json(
+        { error: "Something went wrong", status: "error" },
+        { status: 400 }
+      )
+    );
+
+    const endpoints = createEndpoints({
+      getTodo: {
+        method: "GET",
+        output: z.object({ id: z.number(), title: z.string() }),
+        path: "/todos/1",
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints, errorSchema });
+    const result = await api.getTodo();
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error._tag).toBe("ApiError");
+      const apiError = result.error as ApiError<unknown>;
+      expect(apiError.statusCode).toBe(400);
+      expect(apiError.data).toBeUndefined();
+      expect(apiError.text).toContain("Something went wrong");
+    }
+  });
+
+  test("should respect shouldValidateError function", async () => {
+    const { url } = createMockServer(() =>
+      Response.json(
+        { code: "INTERNAL_ERROR", message: "Server error" },
+        { status: 500 }
+      )
+    );
+
+    const endpoints = createEndpoints({
+      getTodo: {
+        method: "GET",
+        output: z.object({ id: z.number(), title: z.string() }),
+        path: "/todos/1",
+      },
+    });
+
+    // Only validate 4xx errors, not 5xx
+    const api = createApi({
+      baseUrl: url,
+      endpoints,
+      errorSchema,
+      shouldValidateError: (statusCode) =>
+        statusCode >= 400 && statusCode < 500,
+    });
+    const result = await api.getTodo();
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error._tag).toBe("ApiError");
+      const apiError = result.error as ApiError<unknown>;
+      expect(apiError.statusCode).toBe(500);
+      // Should not validate 500 errors
+      expect(apiError.data).toBeUndefined();
+      expect(apiError.text).toContain("INTERNAL_ERROR");
+    }
+  });
+
+  test("should use default validation (4xx only)", async () => {
+    // Test with 400 - should validate
+    const { url: url400 } = createMockServer(() =>
+      Response.json(
+        { code: "BAD_REQUEST", message: "Invalid request" },
+        { status: 400 }
+      )
+    );
+
+    const endpoints400 = createEndpoints({
+      getTodo: {
+        method: "GET",
+        output: z.object({ id: z.number(), title: z.string() }),
+        path: "/todos/1",
+      },
+    });
+
+    const api400 = createApi({
+      baseUrl: url400,
+      endpoints: endpoints400,
+      errorSchema,
+    });
+    const result400 = await api400.getTodo();
+
+    expect(result400.isErr()).toBe(true);
+    if (result400.isErr()) {
+      const apiError = result400.error as ApiError<{
+        code?: string;
+        message: string;
+      }>;
+      expect(apiError.statusCode).toBe(400);
+      expect(apiError.data).toBeDefined();
+      expect(apiError.data?.code).toBe("BAD_REQUEST");
+    }
+
+    // Test with 500 - should NOT validate
+    const { url: url500 } = createMockServer(() =>
+      Response.json(
+        { code: "INTERNAL_ERROR", message: "Server error" },
+        { status: 500 }
+      )
+    );
+
+    const endpoints500 = createEndpoints({
+      getTodo: {
+        method: "GET",
+        output: z.object({ id: z.number(), title: z.string() }),
+        path: "/todos/1",
+      },
+    });
+
+    const api500 = createApi({
+      baseUrl: url500,
+      endpoints: endpoints500,
+      errorSchema,
+    });
+    const result500 = await api500.getTodo();
+
+    expect(result500.isErr()).toBe(true);
+    if (result500.isErr()) {
+      const apiError = result500.error as ApiError<unknown>;
+      expect(apiError.statusCode).toBe(500);
+      expect(apiError.data).toBeUndefined();
+    }
+  });
+
+  test("should work without error schema (backward compatibility)", async () => {
+    const { url } = createMockServer(() =>
+      Response.json({ error: "Not found" }, { status: 404 })
+    );
+
+    const endpoints = createEndpoints({
+      getTodo: {
+        method: "GET",
+        output: z.object({ id: z.number(), title: z.string() }),
+        path: "/todos/1",
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    const result = await api.getTodo();
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error._tag).toBe("ApiError");
+      const apiError = result.error as ApiError<unknown>;
+      expect(apiError.statusCode).toBe(404);
+      expect(apiError.data).toBeUndefined();
+      expect(apiError.text).toContain("Not found");
+    }
+  });
+
+  test("should validate error in streaming endpoint", async () => {
+    const { url } = createMockServer(() =>
+      Response.json(
+        { code: "STREAM_ERROR", message: "Stream failed" },
+        { status: 400 }
+      )
+    );
+
+    const endpoints = createEndpoints({
+      streamData: {
+        method: "GET",
+        output: z.object({ data: z.string() }),
+        path: "/stream",
+        stream: { enabled: true },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints, errorSchema });
+    const result = await api.streamData();
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error._tag).toBe("ApiError");
+      const apiError = result.error as ApiError<{
+        code?: string;
+        message: string;
+      }>;
+      expect(apiError.statusCode).toBe(400);
+      expect(apiError.data).toBeDefined();
+      expect(apiError.data?.message).toBe("Stream failed");
     }
   });
 });
