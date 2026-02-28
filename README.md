@@ -36,13 +36,13 @@ The result: an API layer that is predictable, self-documenting, and refactor-saf
 
 ```bash
 # bun
-bun add kanonic zod
+bun add kanonic zod better-result
 
 # npm
-npm install kanonic zod
+npm install kanonic zod better-result
 ```
 
-Kanonic requires TypeScript 5+ and Zod 4+.
+Kanonic requires TypeScript 5+ and Zod 4+. `better-result` is used directly in your code for composing results with `Result.gen`, `Result.ok`, etc.
 
 ## Quick Start
 
