@@ -355,6 +355,42 @@ const parseErrorResponse = <E>(
   return new ApiError<E>({ statusCode, text });
 };
 
+const getRetryDelay = (retry: Pick<RetryOptions, "backoff" | "delayMs">, attemptIndex: number): number => {
+  switch (retry.backoff) {
+    case "constant": return retry.delayMs;
+    case "linear": return retry.delayMs * (attemptIndex + 1);
+    case "exponential": return retry.delayMs * (2 ** attemptIndex);
+  }
+};
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+const isRetriableError = (
+  err: ApiErrors<unknown>
+): err is FetchError | ApiError<unknown> =>
+  err._tag === "FetchError" || err._tag === "ApiError";
+
+const withRetry = async <E>(
+  attempt: () => Promise<Result<unknown, ApiErrors<E>>>,
+  retry: RetryOptions<E>
+): Promise<Result<unknown, ApiErrors<E>>> => {
+  const shouldRetryFn = retry.shouldRetry ?? (() => true);
+
+  let lastResult = await attempt();
+
+  for (let i = 0; i < retry.times; i++) {
+    if (lastResult.isOk()) break;
+    const error = lastResult.error;
+    if (!isRetriableError(error)) break;
+    if (!shouldRetryFn(error)) break;
+    await sleep(getRetryDelay(retry, i));
+    lastResult = await attempt();
+  }
+
+  return lastResult;
+};
+
 const makeRequest = ({
   method,
   url,
@@ -718,36 +754,7 @@ export const createApi = <T extends Record<string, Endpoint>, E = unknown>({
         return attempt();
       }
 
-      // --- Retry loop — only retries FetchError and ApiError, never validation errors ---
-      const getDelay = (attemptIndex: number): number => {
-        switch (retry.backoff) {
-          case "constant": return retry.delayMs;
-          case "linear": return retry.delayMs * (attemptIndex + 1);
-          case "exponential": return retry.delayMs * (2 ** attemptIndex);
-        }
-      };
-
-      const sleep = (ms: number) =>
-        new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-      const shouldRetryFn = retry.shouldRetry ?? (() => true);
-      const isRetriableError = (
-        err: ApiErrors<E>
-      ): err is FetchError | ApiError<E> =>
-        err._tag === "FetchError" || err._tag === "ApiError";
-
-      let lastResult = await attempt();
-
-      for (let i = 0; i < retry.times; i++) {
-        if (lastResult.isOk()) break;
-        const error = lastResult.error;
-        if (!isRetriableError(error)) break;
-        if (!shouldRetryFn(error)) break;
-        await sleep(getDelay(i));
-        lastResult = await attempt();
-      }
-
-      return lastResult;
+      return withRetry(attempt, retry);
     };
 
     (client as Record<string, unknown>)[name] = endpointFn;
