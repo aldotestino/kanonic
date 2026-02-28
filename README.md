@@ -1,3 +1,5 @@
+[![CI](https://github.com/aldotestino/kanonic/actions/workflows/ci.yml/badge.svg)](https://github.com/aldotestino/kanonic/actions/workflows/ci.yml)
+
 # kanonic
 
 A lightweight, type-safe HTTP client generator for TypeScript. Define your API contract once as a schema, get a fully-typed client back — with zero `try/catch` and exhaustive error handling built in.
