@@ -1,8 +1,7 @@
-// oxlint-disable require-hook
 import { ApiService, createEndpoints } from "kanonic";
-import { ok, safeTry } from "neverthrow";
 import { z } from "zod";
 
+import { Result } from "better-result";
 import * as S from "./schema";
 
 const endpoints = createEndpoints({
@@ -72,20 +71,19 @@ class TodoClient extends ApiService(endpoints, errorSchema) {
     // is not an arrow function and `this` is not bound to the class instance
     const { api } = this;
 
-    // oxlint-disable-next-line func-names
-    return safeTry(async function* () {
-      const post = yield* await api.getPost({ params: { id } });
-      const comments = yield* await api.getComments({ params: { postId: id } });
+    return Result.gen(async function* () {
+      const post = yield* Result.await(api.getPost({ params: { id } }));
+      const comments = yield* Result.await(api.getComments({ params: { postId: id } }));
 
-      const user = yield* await api.getUser({ params: { id: post.userId } });
-      return ok({ comments, post, user });
-    });
+      const user = yield* Result.await(api.getUser({ params: { id: post.userId } }));
+      return Result.ok({ comments, post, user });
+    })
   }
 }
 
 const todoClient = new TodoClient("https://jsonplaceholder.typicode.com");
 
-await todoClient.getEnrichedPost(1).match(
-  (enrichedPost) => console.log(enrichedPost),
-  (error) => console.error(error)
-);
+(await todoClient.getEnrichedPost(1)).match({
+  ok: (enrichedPost) => console.log(enrichedPost),
+  err: (error) => console.error(error)
+});

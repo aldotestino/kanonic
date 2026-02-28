@@ -1,10 +1,4 @@
-// oxlint-disable no-array-for-each
-// oxlint-disable max-statements
-// oxlint-disable prefer-await-to-callbacks
-// oxlint-disable ban-types
-// oxlint-disable no-empty-object-type
-
-import { err, ok, Result, ResultAsync, safeTry } from "neverthrow";
+import { Result } from "better-result";
 import { z } from "zod";
 
 import {
@@ -20,7 +14,7 @@ export type {
   FetchError,
   InputValidationError,
   OutputValidationError,
-  ParseError,
+  ParseError
 };
 
 /**
@@ -90,8 +84,8 @@ export type ApiErrors<E = unknown> =
 // Build the options object type for an endpoint
 type EndpointOptions<E extends Endpoint> = (E extends NonGetEndpoint
   ? E["input"] extends z.ZodType
-    ? { input: z.infer<E["input"]> }
-    : {}
+  ? { input: z.infer<E["input"]> }
+  : {}
   : {}) &
   (E["params"] extends z.ZodType ? { params: z.infer<E["params"]> } : {}) &
   (E["query"] extends z.ZodType ? { query: z.infer<E["query"]> } : {});
@@ -114,18 +108,18 @@ type StreamElementType<E extends Endpoint> = E["output"] extends z.ZodType
 // Return type: ReadableStream<T> when streaming (typed if output schema exists), otherwise the output type
 type EndpointReturn<E extends Endpoint> =
   IsStreamEnabled<E> extends true
-    ? ReadableStream<StreamElementType<E>>
-    : EndpointOutput<E>;
+  ? ReadableStream<StreamElementType<E>>
+  : EndpointOutput<E>;
 
 // Function signature: options required only if EndpointOptions is non-empty
 type EndpointFunction<
   E extends Endpoint,
   ErrType = unknown,
 > = keyof EndpointOptions<E> extends never
-  ? () => ResultAsync<EndpointReturn<E>, ApiErrors<ErrType>>
+  ? () => Promise<Result<EndpointReturn<E>, ApiErrors<ErrType>>>
   : (
-      options: EndpointOptions<E>
-    ) => ResultAsync<EndpointReturn<E>, ApiErrors<ErrType>>;
+    options: EndpointOptions<E>
+  ) => Promise<Result<EndpointReturn<E>, ApiErrors<ErrType>>>;
 
 // The final API client type
 export type ApiClient<T extends Record<string, Endpoint>, E = unknown> = {
@@ -134,14 +128,14 @@ export type ApiClient<T extends Record<string, Endpoint>, E = unknown> = {
 
 type Auth =
   | {
-      type: "bearer";
-      token: string;
-    }
+    type: "bearer";
+    token: string;
+  }
   | {
-      type: "basic";
-      username: string;
-      password: string;
-    };
+    type: "basic";
+    username: string;
+    password: string;
+  };
 
 const buildUrl = ({
   baseUrl,
@@ -198,23 +192,27 @@ const buildHeaders = ({
   return finalHeaders;
 };
 
-const safeFetch = ResultAsync.fromThrowable(
-  fetch,
-  (error) =>
-    new FetchError({
-      cause: error,
-      message: error instanceof Error ? error.message : "Something went wrong",
-    })
-);
+const safeFetch = (url: string, init?: RequestInit) =>
+  Result.tryPromise({
+    try: () => fetch(url, init),
+    catch: (error) =>
+      new FetchError({
+        cause: error,
+        message:
+          error instanceof Error ? error.message : "Something went wrong",
+      }),
+  });
 
-const safeJsonParse = Result.fromThrowable(
-  JSON.parse,
-  (error) =>
-    new ParseError({
-      cause: error,
-      message: error instanceof Error ? error.message : "Failed to parse JSON",
-    })
-);
+const safeJsonParse = (text: string) =>
+  Result.try({
+    try: () => JSON.parse(text) as unknown,
+    catch: (error) =>
+      new ParseError({
+        cause: error,
+        message:
+          error instanceof Error ? error.message : "Failed to parse JSON",
+      }),
+  });
 
 const parseErrorResponse = <E>(
   text: string,
@@ -236,7 +234,7 @@ const parseErrorResponse = <E>(
     return new ApiError<E>({ statusCode, text });
   }
 
-  const json = safeJsonParse(text).mapErr(
+  const json = safeJsonParse(text).mapError(
     (_) => new ApiError<E>({ statusCode, text })
   );
 
@@ -283,19 +281,21 @@ const handleJsonResponse = <E>(
   errorSchema?: z.ZodType<E>,
   shouldValidateError?: (statusCode: number) => boolean
 ) =>
-  safeTry(async function* handleJsonResponse() {
-    const text = yield* await ResultAsync.fromPromise(
-      response.text(),
-      (error) =>
-        new ParseError({
-          cause: error,
-          message:
-            error instanceof Error ? error.message : "Something went wrong",
-        })
+  Result.gen(async function* handleJsonResponse() {
+    const text = yield* Result.await(
+      Result.tryPromise({
+        try: () => response.text(),
+        catch: (error) =>
+          new ParseError({
+            cause: error,
+            message:
+              error instanceof Error ? error.message : "Something went wrong",
+          }),
+      })
     );
 
     if (!response.ok) {
-      return err(
+      return Result.err(
         parseErrorResponse(
           text,
           response.status,
@@ -308,13 +308,13 @@ const handleJsonResponse = <E>(
     const json = yield* safeJsonParse(text);
 
     if (!validateOutput) {
-      return ok(json);
+      return Result.ok(json);
     }
 
     const { success, data, error } = outputSchema.safeParse(json);
 
     if (!success) {
-      return err(
+      return Result.err(
         new OutputValidationError({
           message: "The output from the api was invalid",
           zodError: error,
@@ -322,7 +322,7 @@ const handleJsonResponse = <E>(
       );
     }
 
-    return ok(data);
+    return Result.ok(data);
   });
 
 const handleStreamResponse = <E>(
@@ -332,18 +332,20 @@ const handleStreamResponse = <E>(
   errorSchema?: z.ZodType<E>,
   shouldValidateError?: (statusCode: number) => boolean
 ) =>
-  safeTry(async function* handleStreamResponse() {
+  Result.gen(async function* handleStreamResponse() {
     if (!response.ok) {
-      const text = yield* await ResultAsync.fromPromise(
-        response.text(),
-        (error) =>
-          new ParseError({
-            cause: error,
-            message:
-              error instanceof Error ? error.message : "Something went wrong",
-          })
+      const text = yield* Result.await(
+        Result.tryPromise({
+          try: () => response.text(),
+          catch: (error) =>
+            new ParseError({
+              cause: error,
+              message:
+                error instanceof Error ? error.message : "Something went wrong",
+            }),
+        })
       );
-      return err(
+      return Result.err(
         parseErrorResponse(
           text,
           response.status,
@@ -354,7 +356,7 @@ const handleStreamResponse = <E>(
     }
 
     if (!response.body) {
-      return err(
+      return Result.err(
         new ParseError({
           message: "Response body is null",
         })
@@ -415,7 +417,7 @@ const handleStreamResponse = <E>(
       },
     });
 
-    return ok(stream);
+    return Result.ok(stream);
   });
 
 // Extract data content from SSE "data:" lines, returns null for non-data lines
@@ -449,13 +451,13 @@ const processStreamChunk = (
     return dataContent;
   }
 
-  const processedData = safeJsonParse(dataContent).match(
-    (data) => data,
-    (_) => {
+  const processedData = safeJsonParse(dataContent).match({
+    ok: (data) => data,
+    err: (_) => {
       console.warn("Failed to parse JSON chunk");
       return null;
-    }
-  );
+    },
+  });
 
   if (!processedData) {
     return null;
@@ -527,13 +529,12 @@ export const createApi = <T extends Record<string, Endpoint>, E = unknown>({
   const client = {} as ApiClient<T, E>;
 
   for (const [name, endpoint] of Object.entries(endpoints)) {
-    // oxlint-disable complexity
     const endpointFn = (options?: {
       input?: unknown;
       params?: Record<string, unknown>;
       query?: Record<string, unknown>;
     }) =>
-      safeTry(async function* endpointFn() {
+      Result.gen(async function* endpointFn() {
         let validatedInput = options?.input;
         if (
           validateInput &&
@@ -543,7 +544,7 @@ export const createApi = <T extends Record<string, Endpoint>, E = unknown>({
         ) {
           const inputResult = endpoint.input.safeParse(options?.input);
           if (!inputResult.success) {
-            return err(
+            return Result.err(
               new InputValidationError({
                 message: "Invalid input",
                 zodError: inputResult.error,
@@ -559,7 +560,7 @@ export const createApi = <T extends Record<string, Endpoint>, E = unknown>({
         if (validateInput && endpoint.params) {
           const paramsResult = endpoint.params.safeParse(options?.params);
           if (!paramsResult.success) {
-            return err(
+            return Result.err(
               new InputValidationError({
                 message: "Invalid params",
                 zodError: paramsResult.error,
@@ -575,7 +576,7 @@ export const createApi = <T extends Record<string, Endpoint>, E = unknown>({
         if (validateInput && endpoint.query) {
           const queryResult = endpoint.query.safeParse(options?.query);
           if (!queryResult.success) {
-            return err(
+            return Result.err(
               new InputValidationError({
                 message: "Invalid query",
                 zodError: queryResult.error,
@@ -592,39 +593,45 @@ export const createApi = <T extends Record<string, Endpoint>, E = unknown>({
           query: validatedQuery,
         });
 
-        const response = yield* makeRequest({
-          headers: {
-            "Content-Type": "application/json",
-            ...finalHeaders,
-          },
-          input: validatedInput,
-          method: endpoint.method,
-          url,
-        });
+        const response = yield* Result.await(
+          makeRequest({
+            headers: {
+              "Content-Type": "application/json",
+              ...finalHeaders,
+            },
+            input: validatedInput,
+            method: endpoint.method,
+            url,
+          })
+        );
 
         // Check if streaming is enabled
         if (endpoint.stream?.enabled) {
-          const stream = yield* handleStreamResponse(
-            response,
-            endpoint.output,
-            validateOutput,
-            errorSchema,
-            shouldValidateError
+          const stream = yield* Result.await(
+            handleStreamResponse(
+              response,
+              endpoint.output,
+              validateOutput,
+              errorSchema,
+              shouldValidateError
+            )
           );
-          return ok(stream);
+          return Result.ok(stream);
         }
 
         // Handle response with output validation
         const outputSchema = endpoint.output ?? z.unknown();
-        const result = yield* handleJsonResponse(
-          response,
-          outputSchema,
-          validateOutput,
-          errorSchema,
-          shouldValidateError
+        const result = yield* Result.await(
+          handleJsonResponse(
+            response,
+            outputSchema,
+            validateOutput,
+            errorSchema,
+            shouldValidateError
+          )
         );
 
-        return ok(result);
+        return Result.ok(result);
       });
 
     (client as Record<string, unknown>)[name] = endpointFn;

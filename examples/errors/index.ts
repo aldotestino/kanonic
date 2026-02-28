@@ -1,7 +1,3 @@
-// oxlint-disable require-hook
-// oxlint-disable max-statements
-// oxlint-disable unicorn/no-useless-switch-case
-// oxlint-disable prefer-await-to-callbacks
 import {
   createApi,
   createEndpoints,
@@ -97,11 +93,9 @@ const demonstrateErrorHandling = async () => {
     params: { id: 99_999 },
   });
 
-  result.match(
-    (user) => {
-      console.log("Success:", user);
-    },
-    (error) => {
+  result.match({
+    ok: (user) => console.log("Success:", user),
+    err: (error) => {
       switch (error._tag) {
         case "ApiError": {
           console.log("API Error occurred:");
@@ -145,7 +139,7 @@ const demonstrateErrorHandling = async () => {
         }
       }
     }
-  );
+  });
 };
 
 // Demonstrate different validation strategies

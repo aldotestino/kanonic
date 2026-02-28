@@ -7,8 +7,8 @@
     "start": "bun run index.ts"
   },
   "dependencies": {
+    "better-result": "^2.7.0",
     "kanonic": "workspace:*",
-    "neverthrow": "^8.2.0",
     "zod": "^4.3.5"
   },
   "devDependencies": {
