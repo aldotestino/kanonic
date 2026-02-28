@@ -1,0 +1,97 @@
+// client.ts
+// Demonstrates createApi with:
+//   - typed error responses (errorSchema + shouldValidateError)
+//   - exhaustive error handling via switch(_tag)
+//   - input validation catching bad data before any network call
+//   - output validation catching unexpected response shapes
+//
+// Run: bun run client.ts
+
+import { createApi, validateClientErrors } from "kanonic";
+import { apiErrorSchema, endpoints } from "./endpoints";
+
+const api = createApi({
+  baseUrl: "https://jsonplaceholder.typicode.com",
+  endpoints,
+  // Parse 4xx error bodies against apiErrorSchema.
+  // error.data will be typed as { code, message, details? } when parsing succeeds.
+  errorSchema: apiErrorSchema,
+  shouldValidateError: validateClientErrors,
+});
+
+// ─── 1. Successful request ────────────────────────────────────────────────────
+
+console.log("1. Fetching todo #1\n");
+
+const todo = await api.getTodo({ params: { id: 1 } });
+
+todo.match({
+  ok: (t) => console.log(`  ✓ [${t.completed ? "x" : " "}] ${t.title}\n`),
+  err: (e) => console.error("  ✗", e.message, "\n"),
+});
+
+// ─── 2. Typed error response ──────────────────────────────────────────────────
+
+console.log("2. Fetching a non-existent user (expects 404)\n");
+
+const user = await api.getUser({ params: { id: 99_999 } });
+
+if (user.isErr()) {
+  const { error } = user;
+
+  switch (error._tag) {
+    case "ApiError":
+      console.log("  HTTP", error.statusCode);
+      if (error.data) {
+        // Typed: { code: string; message: string; details?: ... }
+        console.log("  code:   ", error.data.code);
+        console.log("  message:", error.data.message);
+      } else {
+        // JSONPlaceholder doesn't return structured errors, so we fall back
+        console.log("  raw body:", error.text || "(empty)");
+      }
+      break;
+    case "FetchError":
+      console.log("  Network failure:", error.message);
+      break;
+    case "InputValidationError":
+      console.log("  Invalid input:", error.zodError.issues);
+      break;
+    case "OutputValidationError":
+      console.log("  Unexpected response shape:", error.zodError.issues);
+      break;
+    case "ParseError":
+      console.log("  Could not parse response:", error.message);
+      break;
+  }
+  console.log();
+}
+
+// ─── 3. Input validation (caught before the network call) ─────────────────────
+
+console.log("3. Creating a todo with an empty title (expects InputValidationError)\n");
+
+const created = await api.createTodo({ input: { title: "", userId: 1 } });
+
+if (created.isErr() && created.error._tag === "InputValidationError") {
+  console.log("  ✓ Caught before fetch:");
+  for (const issue of created.error.zodError.issues) {
+    console.log("   ", issue.path.join("."), "—", issue.message);
+  }
+  console.log();
+}
+
+// ─── 4. map / andThen chaining ────────────────────────────────────────────────
+
+console.log("4. Fetch all todos and extract only the completed ones\n");
+
+const todos = await api.getTodos();
+
+const completedTitles = todos.map((all) =>
+  all.filter((t) => t.completed).map((t) => t.title),
+);
+
+completedTitles.match({
+  ok: (titles) => console.log(`  ✓ ${titles.length} completed todos\n`),
+  err: (e) => console.error("  ✗", e.message, "\n"),
+});

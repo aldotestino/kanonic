@@ -1,14 +1,16 @@
 {
-  "name": "stream",
+  "name": "app",
   "private": true,
   "type": "module",
-  "module": "index.ts",
+  "module": "endpoints.ts",
   "scripts": {
-    "start": "bun run index.ts"
+    "client": "bun run client.ts",
+    "service": "bun run service.ts",
+    "stream": "bun run stream.ts"
   },
   "dependencies": {
+    "better-result": "^2.7.0",
     "kanonic": "workspace:*",
-    "neverthrow": "^8.2.0",
     "zod": "^4.3.5"
   },
   "devDependencies": {

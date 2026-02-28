@@ -1,27 +1,15 @@
 {
   "name": "kanonic",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "type": "module",
   "workspaces": [
     "packages/*",
     "examples/*"
   ],
-  "type": "module",
-  "scripts": {
-    "check": "ultracite check",
-    "fix": "ultracite fix"
-  },
-  "dependencies": {
-    "@better-fetch/fetch": "^1.1.21",
-    "@better-fetch/logger": "^1.1.21",
-    "neverthrow": "^8.2.0",
-    "zod": "^4.3.5"
-  },
-  "devDependencies": {
-    "@types/bun": "latest",
-    "oxfmt": "^0.23.0",
-    "oxlint": "^1.38.0",
-    "ultracite": "7.0.11"
-  },
-  "peerDependencies": {
-    "typescript": "^5"
-  }
+  "license": "MIT"
 }

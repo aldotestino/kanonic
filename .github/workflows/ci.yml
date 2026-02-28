@@ -26,8 +26,5 @@ jobs:
       - name: Type check
         run: bunx tsc --noEmit
 
-      - name: Run linter
-        run: bun run check
-
       - name: Run tests with coverage
-        run: bun test --coverage
+        run: bun test --cwd packages/kanonic --coverage
