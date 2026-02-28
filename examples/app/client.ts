@@ -3,7 +3,7 @@
 //   - typed error responses (errorSchema + shouldValidateError)
 //   - exhaustive error handling via switch(_tag)
 //   - input validation catching bad data before any network call
-//   - output validation catching unexpected response shapes
+//   - requestOptions at global, endpoint, and per-call level
 //
 // Run: bun run client.ts
 
@@ -17,6 +17,12 @@ const api = createApi({
   // error.data will be typed as { code, message, details? } when parsing succeeds.
   errorSchema: apiErrorSchema,
   shouldValidateError: validateClientErrors,
+  // Global fetch options applied to every request.
+  // Headers here are the lowest priority and can be overridden per-endpoint or per-call.
+  requestOptions: {
+    headers: { "X-Client": "kanonic-example" },
+    cache: "no-store",
+  },
 });
 
 // ─── 1. Successful request ────────────────────────────────────────────────────
@@ -94,4 +100,20 @@ const completedTitles = todos.map((all) =>
 completedTitles.match({
   ok: (titles) => console.log(`  ✓ ${titles.length} completed todos\n`),
   err: (e) => console.error("  ✗", e.message, "\n"),
+});
+
+// ─── 5. Per-call requestOptions ───────────────────────────────────────────────
+
+console.log("5. Fetch todo #1 with an AbortController (not aborted)\n");
+
+const ac = new AbortController();
+
+const abortable = await api.getTodo(
+  { params: { id: 1 } },
+  { signal: ac.signal, headers: { "X-Request-Id": "demo-123" } },
+);
+
+abortable.match({
+  ok: (t) => console.log(`  ✓ ${t.title}\n`),
+  err: (e) => console.error("  ✗", e._tag, "\n"),
 });

@@ -1377,3 +1377,226 @@ describe("Error Schema Validation", () => {
     }
   });
 });
+
+describe("RequestOptions", () => {
+  test("global requestOptions.headers are sent on every request", async () => {
+    let capturedHeader: any = null;
+
+    const { url } = createMockServer((req) => {
+      capturedHeader = req.headers.get("x-global");
+      return Response.json({ id: 1, name: "Alice" });
+    });
+
+    const endpoints = createEndpoints({
+      getUser: {
+        method: "GET",
+        path: "/users",
+        output: z.object({ id: z.number(), name: z.string() }),
+      },
+    });
+
+    const api = createApi({
+      baseUrl: url,
+      endpoints,
+      requestOptions: { headers: { "x-global": "global-value" } },
+    });
+
+    await api.getUser();
+    expect(capturedHeader).toBe("global-value");
+  });
+
+  test("endpoint-level requestOptions.headers are sent for that endpoint", async () => {
+    let capturedHeader: any = null;
+
+    const { url } = createMockServer((req) => {
+      capturedHeader = req.headers.get("x-endpoint");
+      return Response.json({ id: 1, name: "Alice" });
+    });
+
+    const endpoints = createEndpoints({
+      getUser: {
+        method: "GET",
+        path: "/users",
+        output: z.object({ id: z.number(), name: z.string() }),
+        requestOptions: { headers: { "x-endpoint": "endpoint-value" } },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+
+    await api.getUser();
+    expect(capturedHeader).toBe("endpoint-value");
+  });
+
+  test("per-call requestOptions.headers are sent for that call", async () => {
+    let capturedHeader: any = null;
+
+    const { url } = createMockServer((req) => {
+      capturedHeader = req.headers.get("x-call");
+      return Response.json({ id: 1, name: "Alice" });
+    });
+
+    const endpoints = createEndpoints({
+      getUser: {
+        method: "GET",
+        path: "/users",
+        output: z.object({ id: z.number(), name: z.string() }),
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+
+    await api.getUser({ headers: { "x-call": "call-value" } });
+    expect(capturedHeader).toBe("call-value");
+  });
+
+  test("per-call headers override endpoint headers which override global headers", async () => {
+    const captured: Record<string, string> = {};
+
+    const { url } = createMockServer((req) => {
+      captured["x-layer"] = req.headers.get("x-layer") ?? "";
+      captured["x-global-only"] = req.headers.get("x-global-only") ?? "";
+      captured["x-endpoint-only"] = req.headers.get("x-endpoint-only") ?? "";
+      return Response.json({ id: 1, name: "Alice" });
+    });
+
+    const endpoints = createEndpoints({
+      getUser: {
+        method: "GET",
+        path: "/users",
+        output: z.object({ id: z.number(), name: z.string() }),
+        requestOptions: {
+          headers: { "x-layer": "endpoint", "x-endpoint-only": "yes" },
+        },
+      },
+    });
+
+    const api = createApi({
+      baseUrl: url,
+      endpoints,
+      requestOptions: {
+        headers: { "x-layer": "global", "x-global-only": "yes" },
+      },
+    });
+
+    await api.getUser({ headers: { "x-layer": "call" } });
+
+    expect(captured["x-layer"]).toBe("call");         // call wins
+    expect(captured["x-global-only"]).toBe("yes");    // global flows through
+    expect(captured["x-endpoint-only"]).toBe("yes");  // endpoint flows through
+  });
+
+  test("per-call headers on a zero-option endpoint (first arg is requestOptions)", async () => {
+    let capturedHeader: any = null;
+
+    const { url } = createMockServer((req) => {
+      capturedHeader = req.headers.get("x-call");
+      return Response.json([]);
+    });
+
+    const endpoints = createEndpoints({
+      list: {
+        method: "GET",
+        path: "/items",
+        output: z.array(z.unknown()),
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+
+    // Zero-option endpoint: requestOptions is the first (and only) argument
+    await api.list({ headers: { "x-call": "zero-option" } });
+    expect(capturedHeader).toBe("zero-option");
+  });
+
+  test("global non-header requestOptions (cache) are forwarded to fetch", async () => {
+    let requestReceived = false;
+
+    const { url } = createMockServer(() => {
+      requestReceived = true;
+      return Response.json({ id: 1, name: "Alice" });
+    });
+
+    const endpoints = createEndpoints({
+      getUser: {
+        method: "GET",
+        path: "/users",
+        output: z.object({ id: z.number(), name: z.string() }),
+      },
+    });
+
+    // Just verify it doesn't throw — Bun's fetch accepts cache but may ignore it
+    const api = createApi({
+      baseUrl: url,
+      endpoints,
+      requestOptions: { cache: "no-store" },
+    });
+
+    const result = await api.getUser();
+    expect(requestReceived).toBe(true);
+    expect(result.isOk()).toBe(true);
+  });
+
+  test("AbortSignal via per-call requestOptions aborts the request", async () => {
+    const { url } = createMockServer(async () => {
+      await Bun.sleep(500);
+      return Response.json({ id: 1, name: "Alice" });
+    });
+
+    const endpoints = createEndpoints({
+      getUser: {
+        method: "GET",
+        path: "/users",
+        output: z.object({ id: z.number(), name: z.string() }),
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+
+    const ac = new AbortController();
+    // Abort immediately
+    setTimeout(() => ac.abort(), 10);
+
+    const result = await api.getUser({ signal: ac.signal });
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error._tag).toBe("FetchError");
+    }
+  });
+
+  test("endpoint-level requestOptions are not applied to other endpoints", async () => {
+    const capturedA: Record<string, string> = {};
+    const capturedB: Record<string, string> = {};
+
+    const { url } = createMockServer((req) => {
+      const path = new URL(req.url).pathname;
+      const header = req.headers.get("x-only-a") ?? "";
+      if (path === "/a") capturedA["x-only-a"] = header;
+      if (path === "/b") capturedB["x-only-a"] = header;
+      return Response.json({ id: 1 });
+    });
+
+    const endpoints = createEndpoints({
+      getA: {
+        method: "GET",
+        path: "/a",
+        output: z.object({ id: z.number() }),
+        requestOptions: { headers: { "x-only-a": "yes" } },
+      },
+      getB: {
+        method: "GET",
+        path: "/b",
+        output: z.object({ id: z.number() }),
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+
+    await api.getA();
+    await api.getB();
+
+    expect(capturedA["x-only-a"]).toBe("yes");   // set on getA
+    expect(capturedB["x-only-a"]).toBe("");       // not leaked to getB
+  });
+});
