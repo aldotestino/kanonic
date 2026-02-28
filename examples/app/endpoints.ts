@@ -116,6 +116,11 @@ export const endpoints = createEndpoints({
     path: "/users/:id",
     params: z.object({ id: z.number() }),
     output: userSchema,
+    // Endpoint-level requestOptions: applied to every call of this endpoint,
+    // on top of any global requestOptions, but overridable per-call.
+    requestOptions: {
+      headers: { "X-Requires-Auth": "true" },
+    },
   },
 
   // SSE stream

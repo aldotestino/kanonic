@@ -30,6 +30,7 @@ The result: an API layer that is predictable, self-documenting, and refactor-saf
 - **Schema validation** — input (body, path params, query params) and output validated at runtime
 - **Typed error responses** — define a schema for error bodies; `ApiError.data` is typed when parsing succeeds
 - **Streaming (SSE)** — built-in Server-Sent Events support with optional per-chunk schema validation
+- **Per-call retry** — configurable retry with constant, linear, or exponential backoff and a typed `shouldRetry` predicate
 - **Service pattern** — `ApiService` base class for encapsulating and composing multiple API calls
 - **Authentication** — bearer token and HTTP Basic auth out of the box
 - **Tagged errors** — every error has a `_tag` for exhaustive `switch` matching
@@ -321,18 +322,112 @@ const api = createApi({
 });
 ```
 
-### Custom headers
+### Request options
+
+Every `fetch` call kanonic makes can be customised at three levels. The levels merge together — later levels win — with `Content-Type: application/json` always applied last and never overridable.
+
+**Merge order (lowest → highest priority):**
+
+```
+auth (Authorization header)
+  ↓ global requestOptions.headers
+    ↓ endpoint requestOptions.headers
+      ↓ per-call requestOptions.headers
+        ↓ Content-Type: application/json  ← always wins
+```
+
+#### Global — applied to every request
 
 ```ts
 const api = createApi({
   baseUrl: "https://api.example.com",
   endpoints,
-  headers: {
-    "X-Api-Version": "2",
-    "Accept-Language": "en",
+  auth: { type: "bearer", token: "..." },
+  requestOptions: {
+    headers: { "X-Api-Version": "2" },
+    cache: "no-store",
+    credentials: "include",
   },
 });
 ```
+
+#### Endpoint-level — applied to every call of that endpoint
+
+Useful for headers that are specific to a single endpoint (e.g. an auth scope or cache directive) without affecting the rest of the client.
+
+```ts
+const endpoints = createEndpoints({
+  getUser: {
+    method: "GET",
+    path: "/users/:id",
+    params: z.object({ id: z.number() }),
+    output: userSchema,
+    requestOptions: {
+      headers: { "X-Requires-Auth": "true" },
+      cache: "no-cache",
+    },
+  },
+});
+```
+
+#### Per-call — passed as a second argument at the call site
+
+For endpoints **with** schema options (`input`, `params`, `query`), `requestOptions` is the second argument:
+
+```ts
+const ac = new AbortController();
+
+const result = await api.getUser(
+  { params: { id: 1 } },
+  { signal: ac.signal, headers: { "X-Request-Id": "abc123" } },
+);
+```
+
+For endpoints **with no** schema options, `requestOptions` is the first (and only) argument:
+
+```ts
+// api.listUsers() — no input/params/query
+const result = await api.listUsers({ signal: ac.signal });
+```
+
+#### Retry — per-call automatic retries
+
+Add a `retry` key to the per-call `requestOptions` to enable automatic retries. Retry is intentionally **only available at call level** — it cannot be set globally or per-endpoint.
+
+```ts
+const result = await api.getUser(
+  { params: { id: 1 } },
+  {
+    retry: {
+      times: 3,           // retries after the first attempt; total calls = times + 1
+      delayMs: 200,       // base delay in milliseconds
+      backoff: "exponential", // delay schedule (see table below)
+      // Optional predicate — return true to retry, false to stop.
+      // Only receives retriable errors: FetchError or ApiError<E>.
+      // Validation errors (InputValidationError, OutputValidationError, ParseError)
+      // are never retried regardless of this predicate.
+      shouldRetry: (error) => {
+        if (error._tag === "FetchError") return true;   // always retry network errors
+        return error.statusCode >= 500;                 // only retry 5xx, not 4xx
+      },
+    },
+  },
+);
+```
+
+**Backoff strategies** (`d = delayMs`, attempt is 0-indexed from the first retry):
+
+| `backoff` | Formula | Example (`delayMs: 100`) |
+|---|---|---|
+| `"constant"` | `d` | 100ms, 100ms, 100ms |
+| `"linear"` | `d × (attempt + 1)` | 100ms, 200ms, 300ms |
+| `"exponential"` | `d × 2^attempt` | 100ms, 200ms, 400ms |
+
+**Key behaviours:**
+- `shouldRetry` defaults to always retry if omitted
+- The initial attempt is not counted — `times: 3` means up to 3 retries (4 total calls)
+- Validation errors (`InputValidationError`, `OutputValidationError`, `ParseError`) are **never** retried
+- If `shouldRetry` returns `false`, retrying stops immediately and the last error is returned
 
 ### The ApiService class
 
@@ -486,9 +581,9 @@ Creates the typed API client.
 createApi({
   baseUrl: string;                                        // Required
   endpoints: T;                                           // Required — from createEndpoints()
-  headers?: Record<string, string>;                       // Merged into every request
   auth?: { type: "bearer"; token: string }
         | { type: "basic"; username: string; password: string };
+  requestOptions?: RequestOptions;                        // Global fetch options (incl. headers)
   validateInput?: boolean;                                // Default: true
   validateOutput?: boolean;                               // Default: true
   errorSchema?: z.ZodType<E>;                             // Schema for error bodies
@@ -496,9 +591,31 @@ createApi({
 })
 ```
 
-Returns an `ApiClient<T, E>` object where each key in `T` is a function:
-- **No options required** (no `input`, `params`, or `query`): `() => Promise<Result<...>>`
-- **Options required**: `(options: { input?, params?, query? }) => Promise<Result<...>>`
+Returns an `ApiClient<T, E>` where each endpoint is a function with one of two signatures depending on whether the endpoint has schema options (`input`, `params`, `query`):
+
+- **No schema options**: `(requestOptions?: RequestOptions<E>) => Promise<Result<...>>`
+- **With schema options**: `(options: EndpointOptions, requestOptions?: RequestOptions<E>) => Promise<Result<...>>`
+
+### `RequestOptions<E>`
+
+A subset of `RequestInit` (excludes `body` and `method`). Can include a `retry` field at the per-call level.
+
+```ts
+type RequestOptions<E = unknown> = Omit<RequestInit, "body" | "method"> & {
+  retry?: RetryOptions<E>;
+};
+```
+
+### `RetryOptions<E>`
+
+```ts
+type RetryOptions<E = unknown> = {
+  times: number;                                          // Number of retries (not counting initial)
+  delayMs: number;                                        // Base delay in milliseconds
+  backoff: "constant" | "linear" | "exponential";
+  shouldRetry?: (error: FetchError | ApiError<E>) => boolean; // Defaults to always retry
+};
+```
 
 ### `ApiService(endpoints, errorSchema?)`
 
@@ -508,12 +625,12 @@ Class factory. Returns a base class that your service can extend.
 class MyService extends ApiService(endpoints, errorSchema) {
   constructor(baseUrl: string) {
     super({
-      baseUrl,                                              // Required
-      headers?,                                            // Optional
-      auth?,                                               // Optional
-      validateInput?,                                      // Optional
-      validateOutput?,                                     // Optional
-      shouldValidateError?,                                // Optional
+      baseUrl,              // Required
+      auth?,                // Optional
+      requestOptions?,      // Optional — global fetch options
+      validateInput?,       // Optional
+      validateOutput?,      // Optional
+      shouldValidateError?, // Optional
     });
   }
 }
@@ -534,12 +651,13 @@ Preset `shouldValidateError` predicate. Returns `true` for all error responses.
 ```ts
 {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-  path: `/${string}`;          // Must start with /
-  params?: z.ZodType;          // Path parameter schema (:paramName substitution)
-  query?: z.ZodType;           // Query string schema
-  input?: z.ZodType;           // Request body schema (non-GET only)
-  output?: z.ZodType;          // Response body schema
-  stream?: { enabled: true };  // Enable SSE streaming
+  path: `/${string}`;                  // Must start with /
+  params?: z.ZodType;                  // Path parameter schema (:paramName substitution)
+  query?: z.ZodType;                   // Query string schema
+  input?: z.ZodType;                   // Request body schema (non-GET only)
+  output?: z.ZodType;                  // Response body schema
+  stream?: { enabled: true };          // Enable SSE streaming
+  requestOptions?: RequestOptions;     // Endpoint-level fetch options
 }
 ```
 

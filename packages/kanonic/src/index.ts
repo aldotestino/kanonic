@@ -19,7 +19,6 @@ export type {
 
 /**
  * Preset validation function that validates only client errors (4xx status codes).
- * This is the default behavior when errorSchema is provided but shouldValidateError is not.
  *
  * @example
  * ```ts
@@ -49,6 +48,65 @@ export const validateClientErrors = (statusCode: number) =>
  */
 export const validateAllErrors = () => true;
 
+/**
+ * Retry configuration for a per-call request. Mirrors better-result's retry
+ * API but scoped to kanonic's error types.
+ *
+ * `shouldRetry` receives either a `FetchError` (network failure) or an
+ * `ApiError<E>` (server error response). Validation errors
+ * (`InputValidationError`, `OutputValidationError`, `ParseError`) are never
+ * retried regardless of this predicate.
+ *
+ * Delay math (delayMs = d, attempt is 0-indexed):
+ *   constant:    d
+ *   linear:      d * (attempt + 1)
+ *   exponential: d * 2^attempt
+ *
+ * @example
+ * ```ts
+ * await api.getUser({ params: { id: 1 } }, {
+ *   retry: {
+ *     times: 3,
+ *     delayMs: 100,
+ *     backoff: "exponential",
+ *     shouldRetry: (error) => {
+ *       if (error._tag === "ApiError") return error.statusCode >= 500;
+ *       return true; // always retry network errors
+ *     },
+ *   },
+ * });
+ * ```
+ */
+export type RetryOptions<E = unknown> = {
+  /** Number of retries (not counting the initial attempt). Total calls = times + 1. */
+  times: number;
+  /** Base delay in milliseconds between retries. */
+  delayMs: number;
+  backoff: "linear" | "constant" | "exponential";
+  /**
+   * Optional predicate. Return `true` to retry, `false` to stop.
+   * Receives only retriable errors: `FetchError` or `ApiError<E>`.
+   * Defaults to always retry.
+   */
+  shouldRetry?: (error: FetchError | ApiError<E>) => boolean;
+};
+
+/**
+ * A subset of RequestInit that can be supplied at the global, endpoint, or
+ * per-call level. `body` and `method` are always controlled by kanonic and
+ * therefore excluded.
+ *
+ * Headers from all three levels are merged, with per-call winning over
+ * endpoint-level winning over global. `Content-Type: application/json` is
+ * always applied last and cannot be overridden.
+ *
+ * `retry` is only meaningful at the per-call level; it is ignored on global
+ * and endpoint-level `requestOptions`.
+ */
+export type RequestOptions<E = unknown> = Omit<RequestInit, "body" | "method"> & {
+  retry?: RetryOptions<E>;
+};
+
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 // Base endpoint properties shared by all methods
@@ -58,6 +116,8 @@ interface BaseEndpoint {
   params?: z.ZodType;
   output?: z.ZodType;
   stream?: { enabled: boolean };
+  /** Fetch options applied to every call of this endpoint (retry is ignored here). */
+  requestOptions?: Omit<RequestOptions, "retry">;
 }
 
 // GET endpoint (no input body)
@@ -105,21 +165,47 @@ type StreamElementType<E extends Endpoint> = E["output"] extends z.ZodType
   ? z.infer<E["output"]>
   : string;
 
-// Return type: ReadableStream<T> when streaming (typed if output schema exists), otherwise the output type
+// Return type: ReadableStream<T> when streaming, otherwise the output type
 type EndpointReturn<E extends Endpoint> =
   IsStreamEnabled<E> extends true
   ? ReadableStream<StreamElementType<E>>
   : EndpointOutput<E>;
 
-// Function signature: options required only if EndpointOptions is non-empty
-type EndpointFunction<
+type ResultPromise<E extends Endpoint, ErrType> = Promise<
+  Result<EndpointReturn<E>, ApiErrors<ErrType>>
+>;
+
+/**
+ * Function signature for an endpoint with no schema options (no input/params/query).
+ * The single optional argument is per-call RequestOptions.
+ *
+ *   api.listUsers()
+ *   api.listUsers({ signal: controller.signal })
+ */
+type ZeroOptionEndpointFunction<E extends Endpoint, ErrType> = (
+  requestOptions?: RequestOptions<ErrType>
+) => ResultPromise<E, ErrType>;
+
+/**
+ * Function signature for an endpoint that requires schema options.
+ * The second optional argument is per-call RequestOptions.
+ *
+ *   api.getUser({ params: { id: 1 } })
+ *   api.getUser({ params: { id: 1 } }, { signal: controller.signal })
+ */
+type OptionEndpointFunction<E extends Endpoint, ErrType> = (
+  options: EndpointOptions<E>,
+  requestOptions?: RequestOptions<ErrType>
+) => ResultPromise<E, ErrType>;
+
+// The overload: zero-option endpoints take (requestOptions?) while
+// endpoints with options take (options, requestOptions?)
+export type EndpointFunction<
   E extends Endpoint,
   ErrType = unknown,
 > = keyof EndpointOptions<E> extends never
-  ? () => Promise<Result<EndpointReturn<E>, ApiErrors<ErrType>>>
-  : (
-    options: EndpointOptions<E>
-  ) => Promise<Result<EndpointReturn<E>, ApiErrors<ErrType>>>;
+  ? ZeroOptionEndpointFunction<E, ErrType>
+  : OptionEndpointFunction<E, ErrType>;
 
 // The final API client type
 export type ApiClient<T extends Record<string, Endpoint>, E = unknown> = {
@@ -173,24 +259,45 @@ const buildUrl = ({
   return url.toString();
 };
 
-const buildHeaders = ({
-  headers,
-  auth,
-}: {
-  headers?: Record<string, string>;
-  auth?: Auth;
-}) => {
-  const finalHeaders = { ...headers };
-  if (auth) {
-    if (auth.type === "bearer") {
-      finalHeaders["Authorization"] = `Bearer ${auth.token}`;
-    } else if (auth.type === "basic") {
-      finalHeaders["Authorization"] =
-        `Basic ${btoa(`${auth.username}:${auth.password}`)}`;
-    }
+/** Resolve HeadersInit to a plain Record<string, string>. */
+const resolveHeaders = (headers?: RequestInit["headers"]): Record<string, string> => {
+  if (!headers) return {};
+  if (headers instanceof Headers) {
+    const out: Record<string, string> = {};
+    headers.forEach((v, k) => { out[k] = v; });
+    return out;
   }
-  return finalHeaders;
+  if (Array.isArray(headers)) {
+    return Object.fromEntries(headers);
+  }
+  return headers as Record<string, string>;
 };
+
+const buildAuthHeader = (auth?: Auth): Record<string, string> => {
+  if (!auth) return {};
+  if (auth.type === "bearer") {
+    return { Authorization: `Bearer ${auth.token}` };
+  }
+  return { Authorization: `Basic ${btoa(`${auth.username}:${auth.password}`)}` };
+};
+
+/**
+ * Merge all header sources into a single plain object.
+ * Priority (lowest → highest):
+ *   auth → global headers → endpoint headers → call headers → Content-Type
+ */
+const mergeHeaders = (
+  auth: Record<string, string>,
+  global: Record<string, string>,
+  endpoint: Record<string, string>,
+  call: Record<string, string>,
+): Record<string, string> => ({
+  ...auth,
+  ...global,
+  ...endpoint,
+  ...call,
+  "Content-Type": "application/json",
+});
 
 const safeFetch = (url: string, init?: RequestInit) =>
   Result.tryPromise({
@@ -220,12 +327,10 @@ const parseErrorResponse = <E>(
   errorSchema?: z.ZodType<E>,
   shouldValidateError?: (statusCode: number) => boolean
 ): ApiError<E> => {
-  // No schema provided - return with just text (current behavior)
   if (!errorSchema) {
     return new ApiError<E>({ statusCode, text });
   }
 
-  // Default: don't validate errors unless explicitly requested
   const shouldValidate = shouldValidateError
     ? shouldValidateError(statusCode)
     : false;
@@ -242,19 +347,48 @@ const parseErrorResponse = <E>(
     return json.error;
   }
 
-  // Validate with zod schema
   const result = errorSchema.safeParse(json.value);
   if (result.success) {
-    // Validation succeeded - include parsed data
-    return new ApiError<E>({
-      data: result.data,
-      statusCode,
-      text,
-    });
+    return new ApiError<E>({ data: result.data, statusCode, text });
   }
 
-  // Validation failed - fallback to text only
   return new ApiError<E>({ statusCode, text });
+};
+
+const getRetryDelay = (retry: Pick<RetryOptions, "backoff" | "delayMs">, attemptIndex: number): number => {
+  switch (retry.backoff) {
+    case "constant": return retry.delayMs;
+    case "linear": return retry.delayMs * (attemptIndex + 1);
+    case "exponential": return retry.delayMs * (2 ** attemptIndex);
+  }
+};
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+const isRetriableError = (
+  err: ApiErrors<unknown>
+): err is FetchError | ApiError<unknown> =>
+  err._tag === "FetchError" || err._tag === "ApiError";
+
+const withRetry = async <E>(
+  attempt: () => Promise<Result<unknown, ApiErrors<E>>>,
+  retry: RetryOptions<E>
+): Promise<Result<unknown, ApiErrors<E>>> => {
+  const shouldRetryFn = retry.shouldRetry ?? (() => true);
+
+  let lastResult = await attempt();
+
+  for (let i = 0; i < retry.times; i++) {
+    if (lastResult.isOk()) break;
+    const error = lastResult.error;
+    if (!isRetriableError(error)) break;
+    if (!shouldRetryFn(error)) break;
+    await sleep(getRetryDelay(retry, i));
+    lastResult = await attempt();
+  }
+
+  return lastResult;
 };
 
 const makeRequest = ({
@@ -262,13 +396,16 @@ const makeRequest = ({
   url,
   headers,
   input,
+  requestOptions,
 }: {
   method: Method;
   url: string;
-  headers?: Record<string, string>;
+  headers: Record<string, string>;
   input?: unknown;
+  requestOptions?: Omit<RequestOptions, "headers" | "retry">;
 }) =>
   safeFetch(url, {
+    ...requestOptions,
     body: method === "GET" ? undefined : JSON.stringify(input),
     headers,
     method,
@@ -296,12 +433,7 @@ const handleJsonResponse = <E>(
 
     if (!response.ok) {
       return Result.err(
-        parseErrorResponse(
-          text,
-          response.status,
-          errorSchema,
-          shouldValidateError
-        )
+        parseErrorResponse(text, response.status, errorSchema, shouldValidateError)
       );
     }
 
@@ -346,21 +478,12 @@ const handleStreamResponse = <E>(
         })
       );
       return Result.err(
-        parseErrorResponse(
-          text,
-          response.status,
-          errorSchema,
-          shouldValidateError
-        )
+        parseErrorResponse(text, response.status, errorSchema, shouldValidateError)
       );
     }
 
     if (!response.body) {
-      return Result.err(
-        new ParseError({
-          message: "Response body is null",
-        })
-      );
+      return Result.err(new ParseError({ message: "Response body is null" }));
     }
 
     const reader = response.body.getReader();
@@ -375,17 +498,12 @@ const handleStreamResponse = <E>(
         const { done, value } = await reader.read();
 
         if (done) {
-          // Process any remaining buffer
           if (buffer.trim()) {
             const lines = buffer.split("\n");
             for (const line of lines) {
               const dataContent = extractDataLine(line);
               if (dataContent !== null) {
-                const processedData = processStreamChunk(
-                  dataContent,
-                  outputSchema,
-                  validateOutput
-                );
+                const processedData = processStreamChunk(dataContent, outputSchema, validateOutput);
                 if (processedData !== null) {
                   controller.enqueue(processedData);
                 }
@@ -398,17 +516,12 @@ const handleStreamResponse = <E>(
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
-        // Keep the last incomplete line in buffer
         buffer = lines.pop() ?? "";
 
         for (const line of lines) {
           const dataContent = extractDataLine(line);
           if (dataContent !== null) {
-            const processedData = processStreamChunk(
-              dataContent,
-              outputSchema,
-              validateOutput
-            );
+            const processedData = processStreamChunk(dataContent, outputSchema, validateOutput);
             if (processedData !== null) {
               controller.enqueue(processedData);
             }
@@ -420,36 +533,20 @@ const handleStreamResponse = <E>(
     return Result.ok(stream);
   });
 
-// Extract data content from SSE "data:" lines, returns null for non-data lines
 const extractDataLine = (line: string): string | null => {
   const trimmed = line.trim();
-
-  // Only process "data:" lines (SSE format)
-  if (!trimmed.startsWith("data:")) {
-    return null;
-  }
-
+  if (!trimmed.startsWith("data:")) return null;
   const dataContent = trimmed.slice(5).trim();
-
-  // Skip empty data or [DONE] markers
-  if (!dataContent || dataContent === "[DONE]") {
-    return null;
-  }
-
+  if (!dataContent || dataContent === "[DONE]") return null;
   return dataContent;
 };
 
-// Process a stream chunk: parse JSON and optionally validate
-// Returns null for invalid chunks (which will be skipped)
 const processStreamChunk = (
   dataContent: string,
   outputSchema?: z.ZodType,
   validateOutput = true
 ): unknown => {
-  // If no output schema provided, return raw string
-  if (!outputSchema) {
-    return dataContent;
-  }
+  if (!outputSchema) return dataContent;
 
   const processedData = safeJsonParse(dataContent).match({
     ok: (data) => data,
@@ -459,15 +556,11 @@ const processStreamChunk = (
     },
   });
 
-  if (!processedData) {
-    return null;
-  }
+  if (!processedData) return null;
 
-  // Validate if validateOutput is enabled
   if (validateOutput) {
     const result = outputSchema.safeParse(processedData);
     if (!result.success) {
-      // Skip invalid chunks
       console.warn("Validation failed for chunk:", result.error);
       return null;
     }
@@ -480,36 +573,30 @@ const processStreamChunk = (
 /**
  * Creates a type-safe API client from endpoint definitions.
  *
- * Configuration options:
- * - baseUrl: Base URL for all API requests
- * - endpoints: Endpoint definitions created with createEndpoints
- * - headers: Optional default headers for all requests
- * - auth: Optional authentication configuration (bearer or basic)
- * - validateOutput: Whether to validate response data (default: true)
- * - validateInput: Whether to validate request data (default: true)
- * - errorSchema: Optional Zod schema for error response validation
- * - shouldValidateError: Function to control which status codes to validate (default: 4xx only)
- *
  * @example
  * ```ts
- * const errorSchema = z.object({
- *   message: z.string(),
- *   code: z.string().optional()
- * });
- *
  * const api = createApi({
  *   baseUrl: "https://api.example.com",
  *   endpoints,
+ *   auth: { type: "bearer", token: "..." },
+ *   requestOptions: { credentials: "include" },
  *   errorSchema,
- *   shouldValidateError: (code) => code >= 400 && code < 500
+ *   shouldValidateError: validateClientErrors,
  * });
+ *
+ * // Per-call options (second argument on endpoints with schema options)
+ * const ac = new AbortController();
+ * const result = await api.getUser({ params: { id: 1 } }, { signal: ac.signal });
+ *
+ * // Zero-option endpoints take requestOptions as first argument
+ * const result = await api.listUsers({ signal: ac.signal });
  * ```
  */
 export const createApi = <T extends Record<string, Endpoint>, E = unknown>({
   baseUrl,
   endpoints,
-  headers,
   auth,
+  requestOptions: globalRequestOptions,
   validateOutput = true,
   validateInput = true,
   errorSchema,
@@ -517,95 +604,125 @@ export const createApi = <T extends Record<string, Endpoint>, E = unknown>({
 }: {
   baseUrl: string;
   endpoints: T;
-  headers?: Record<string, string>;
   auth?: Auth;
+  /** Fetch options applied to every request. Headers here are lowest priority. Retry is ignored here. */
+  requestOptions?: Omit<RequestOptions, "retry">;
   validateOutput?: boolean;
   validateInput?: boolean;
   errorSchema?: z.ZodType<E>;
   shouldValidateError?: (statusCode: number) => boolean;
 }): ApiClient<T, E> => {
-  const finalHeaders = buildHeaders({ auth, headers });
+  const authHeader = buildAuthHeader(auth);
+  const globalHeaders = resolveHeaders(globalRequestOptions?.headers);
+  const { headers: _gh, ...globalRestOptions } = globalRequestOptions ?? {};
 
   const client = {} as ApiClient<T, E>;
 
   for (const [name, endpoint] of Object.entries(endpoints)) {
-    const endpointFn = (options?: {
-      input?: unknown;
-      params?: Record<string, unknown>;
-      query?: Record<string, unknown>;
-    }) =>
-      Result.gen(async function* endpointFn() {
-        let validatedInput = options?.input;
-        if (
-          validateInput &&
-          endpoint.method !== "GET" &&
-          "input" in endpoint &&
-          endpoint.input
-        ) {
-          const inputResult = endpoint.input.safeParse(options?.input);
-          if (!inputResult.success) {
-            return Result.err(
-              new InputValidationError({
-                message: "Invalid input",
-                zodError: inputResult.error,
-              })
-            );
-          }
-          validatedInput = inputResult.data;
+    const endpointHeaders = resolveHeaders(endpoint.requestOptions?.headers);
+    const { headers: _eh, ...endpointRestOptions } = endpoint.requestOptions ?? {};
+
+    // The runtime function handles both call signatures:
+    //   zero-option:  (requestOptions?)
+    //   with-options: (options, requestOptions?)
+    const endpointFn = async (
+      optionsOrRequestOptions?: Record<string, unknown> | RequestOptions<E>,
+      maybeRequestOptions?: RequestOptions<E>,
+    ): Promise<Result<unknown, ApiErrors<E>>> => {
+      // Determine which arg is which based on whether the endpoint has schema keys
+      const hasSchemaOptions = ["input", "params", "query"].some(
+        (k) => k in endpoint && endpoint[k as keyof Endpoint] !== undefined
+      );
+
+      const schemaOptions = hasSchemaOptions
+        ? (optionsOrRequestOptions as { input?: unknown; params?: Record<string, unknown>; query?: Record<string, unknown> } | undefined)
+        : undefined;
+
+      const callRequestOptions: RequestOptions<E> | undefined = hasSchemaOptions
+        ? maybeRequestOptions
+        : (optionsOrRequestOptions as RequestOptions<E> | undefined);
+
+      const callHeaders = resolveHeaders(callRequestOptions?.headers);
+      const { headers: _ch, retry, ...callRestOptions } = callRequestOptions ?? {};
+
+      // --- Validation phase (plain async, returns Result early on error) ---
+      let validatedInput = schemaOptions?.input;
+      if (
+        validateInput &&
+        endpoint.method !== "GET" &&
+        "input" in endpoint &&
+        endpoint.input
+      ) {
+        const inputResult = endpoint.input.safeParse(schemaOptions?.input);
+        if (!inputResult.success) {
+          return Result.err(
+            new InputValidationError({
+              message: "Invalid input",
+              zodError: inputResult.error,
+            })
+          );
         }
+        validatedInput = inputResult.data;
+      }
 
-        // Validate params if schema exists
-        let validatedParams: Record<string, unknown> | undefined =
-          options?.params as Record<string, unknown> | undefined;
-        if (validateInput && endpoint.params) {
-          const paramsResult = endpoint.params.safeParse(options?.params);
-          if (!paramsResult.success) {
-            return Result.err(
-              new InputValidationError({
-                message: "Invalid params",
-                zodError: paramsResult.error,
-              })
-            );
-          }
-          validatedParams = paramsResult.data as Record<string, unknown>;
+      let validatedParams: Record<string, unknown> | undefined =
+        schemaOptions?.params;
+      if (validateInput && endpoint.params) {
+        const paramsResult = endpoint.params.safeParse(schemaOptions?.params);
+        if (!paramsResult.success) {
+          return Result.err(
+            new InputValidationError({
+              message: "Invalid params",
+              zodError: paramsResult.error,
+            })
+          );
         }
+        validatedParams = paramsResult.data as Record<string, unknown>;
+      }
 
-        // Validate query if schema exists
-        let validatedQuery: Record<string, unknown> | undefined =
-          options?.query as Record<string, unknown> | undefined;
-        if (validateInput && endpoint.query) {
-          const queryResult = endpoint.query.safeParse(options?.query);
-          if (!queryResult.success) {
-            return Result.err(
-              new InputValidationError({
-                message: "Invalid query",
-                zodError: queryResult.error,
-              })
-            );
-          }
-          validatedQuery = queryResult.data as Record<string, unknown>;
+      let validatedQuery: Record<string, unknown> | undefined =
+        schemaOptions?.query;
+      if (validateInput && endpoint.query) {
+        const queryResult = endpoint.query.safeParse(schemaOptions?.query);
+        if (!queryResult.success) {
+          return Result.err(
+            new InputValidationError({
+              message: "Invalid query",
+              zodError: queryResult.error,
+            })
+          );
         }
+        validatedQuery = queryResult.data as Record<string, unknown>;
+      }
 
-        const url = buildUrl({
-          baseUrl,
-          params: validatedParams,
-          path: endpoint.path,
-          query: validatedQuery,
-        });
+      // --- Build URL and merged options (sync) ---
+      const url = buildUrl({
+        baseUrl,
+        params: validatedParams,
+        path: endpoint.path,
+        query: validatedQuery,
+      });
 
+      const mergedRestOptions = {
+        ...globalRestOptions,
+        ...endpointRestOptions,
+        ...callRestOptions,
+      };
+
+      const headers = mergeHeaders(authHeader, globalHeaders, endpointHeaders, callHeaders);
+
+      // --- Core attempt: fetch + handle response (standalone Result.gen, no nesting) ---
+      const attempt = (): Promise<Result<unknown, ApiErrors<E>>> => Result.gen(async function* attempt() {
         const response = yield* Result.await(
           makeRequest({
-            headers: {
-              "Content-Type": "application/json",
-              ...finalHeaders,
-            },
+            headers,
             input: validatedInput,
             method: endpoint.method,
+            requestOptions: mergedRestOptions,
             url,
           })
         );
 
-        // Check if streaming is enabled
         if (endpoint.stream?.enabled) {
           const stream = yield* Result.await(
             handleStreamResponse(
@@ -619,7 +736,6 @@ export const createApi = <T extends Record<string, Endpoint>, E = unknown>({
           return Result.ok(stream);
         }
 
-        // Handle response with output validation
         const outputSchema = endpoint.output ?? z.unknown();
         const result = yield* Result.await(
           handleJsonResponse(
@@ -630,9 +746,16 @@ export const createApi = <T extends Record<string, Endpoint>, E = unknown>({
             shouldValidateError
           )
         );
-
         return Result.ok(result);
       });
+
+      // --- No retry: single attempt ---
+      if (!retry) {
+        return attempt();
+      }
+
+      return withRetry(attempt, retry);
+    };
 
     (client as Record<string, unknown>)[name] = endpointFn;
   }
@@ -649,11 +772,9 @@ export const createEndpoints = <T extends Record<string, Endpoint>>(
  *
  * @example
  * ```ts
- * const errorSchema = z.object({ message: z.string() });
- *
  * class MyService extends ApiService(endpoints, errorSchema) {
  *   constructor(baseUrl: string) {
- *     super({ baseUrl });
+ *     super({ baseUrl, auth: { type: "bearer", token: "..." } });
  *   }
  * }
  * ```
