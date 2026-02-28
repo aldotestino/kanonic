@@ -4,6 +4,7 @@
 //   - exhaustive error handling via switch(_tag)
 //   - input validation catching bad data before any network call
 //   - requestOptions at global, endpoint, and per-call level
+//   - per-call retry with backoff and shouldRetry predicate
 //
 // Run: bun run client.ts
 
@@ -115,5 +116,32 @@ const abortable = await api.getTodo(
 
 abortable.match({
   ok: (t) => console.log(`  ✓ ${t.title}\n`),
+  err: (e) => console.error("  ✗", e._tag, "\n"),
+});
+
+// ─── 6. Retry with exponential backoff ────────────────────────────────────────
+
+console.log("6. Fetch todo #1 with retry (up to 3 retries, exponential backoff)\n");
+
+// Retry is opt-in per call. Validation errors are never retried.
+// shouldRetry receives either a FetchError or ApiError<E> — never a validation error.
+const retried = await api.getTodo(
+  { params: { id: 1 } },
+  {
+    retry: {
+      times: 3,           // up to 3 retries (4 total calls if all fail)
+      delayMs: 200,       // base delay in ms
+      backoff: "exponential", // 200ms, 400ms, 800ms
+      // Only retry on network failures or 5xx server errors — stop on 4xx
+      shouldRetry: (error) => {
+        if (error._tag === "FetchError") return true;
+        return error.statusCode >= 500;
+      },
+    },
+  },
+);
+
+retried.match({
+  ok: (t) => console.log(`  ✓ [${t.completed ? "x" : " "}] ${t.title}\n`),
   err: (e) => console.error("  ✗", e._tag, "\n"),
 });

@@ -13,6 +13,7 @@ import {
   createEndpoints,
   validateAllErrors,
   validateClientErrors,
+  type RetryOptions,
 } from "./index";
 
 // Create a mock HTTP server for testing
@@ -1598,5 +1599,287 @@ describe("RequestOptions", () => {
 
     expect(capturedA["x-only-a"]).toBe("yes");   // set on getA
     expect(capturedB["x-only-a"]).toBe("");       // not leaked to getB
+  });
+});
+
+// Retry Tests (8 tests)
+describe("Retry", () => {
+  const endpoints = createEndpoints({
+    getUser: {
+      method: "GET",
+      path: "/users",
+      output: z.object({ id: z.number(), name: z.string() }),
+    },
+    createUser: {
+      method: "POST",
+      path: "/users",
+      input: z.object({ name: z.string() }),
+      output: z.object({ id: z.number(), name: z.string() }),
+    },
+  });
+
+  const retryOnce: RetryOptions = {
+    times: 1,
+    delayMs: 0,
+    backoff: "constant",
+  };
+
+  test("succeeds on first try without retrying", async () => {
+    let callCount = 0;
+
+    const { url } = createMockServer(() => {
+      callCount++;
+      return Response.json({ id: 1, name: "Alice" });
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+
+    const result = await api.getUser({ retry: retryOnce });
+
+    expect(result.isOk()).toBe(true);
+    expect(callCount).toBe(1);
+  });
+
+  test("retries on FetchError and succeeds", async () => {
+    let callCount = 0;
+
+    const { url } = createMockServer(() => {
+      callCount++;
+      if (callCount < 2) {
+        // Force a network error by closing the connection abruptly
+        return new Response(null, { status: 500 });
+      }
+      return Response.json({ id: 1, name: "Alice" });
+    });
+
+    const apiErrorSchema = z.object({ message: z.string() });
+    const api = createApi({
+      baseUrl: url,
+      endpoints,
+      errorSchema: apiErrorSchema,
+      shouldValidateError: validateAllErrors,
+    });
+
+    // Use shouldRetry that only retries ApiError with status 500
+    const result = await api.getUser({
+      retry: {
+        times: 2,
+        delayMs: 0,
+        backoff: "constant",
+        shouldRetry: (err) => err._tag === "ApiError" && err.statusCode === 500,
+      },
+    });
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      expect(result.value).toEqual({ id: 1, name: "Alice" });
+    }
+    expect(callCount).toBe(2);
+  });
+
+  test("retries on ApiError and succeeds", async () => {
+    let callCount = 0;
+
+    const { url } = createMockServer(() => {
+      callCount++;
+      if (callCount < 3) {
+        return Response.json({ message: "temporarily unavailable" }, { status: 503 });
+      }
+      return Response.json({ id: 2, name: "Bob" });
+    });
+
+    const apiErrorSchema = z.object({ message: z.string() });
+    const api = createApi({
+      baseUrl: url,
+      endpoints,
+      errorSchema: apiErrorSchema,
+      shouldValidateError: validateAllErrors,
+    });
+
+    const result = await api.getUser({
+      retry: { times: 3, delayMs: 0, backoff: "constant" },
+    });
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      expect(result.value).toEqual({ id: 2, name: "Bob" });
+    }
+    expect(callCount).toBe(3);
+  });
+
+  test("returns last error after all retries are exhausted", async () => {
+    let callCount = 0;
+
+    const { url } = createMockServer(() => {
+      callCount++;
+      return Response.json({ message: "always fails" }, { status: 500 });
+    });
+
+    const apiErrorSchema = z.object({ message: z.string() });
+    const api = createApi({
+      baseUrl: url,
+      endpoints,
+      errorSchema: apiErrorSchema,
+      shouldValidateError: validateAllErrors,
+    });
+
+    const result = await api.getUser({
+      retry: { times: 2, delayMs: 0, backoff: "constant" },
+    });
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error._tag).toBe("ApiError");
+      const err = result.error as ApiError<{ message: string }>;
+      expect(err.statusCode).toBe(500);
+      expect(err.data).toEqual({ message: "always fails" });
+    }
+    // initial attempt + 2 retries = 3 total calls
+    expect(callCount).toBe(3);
+  });
+
+  test("stops retrying when shouldRetry returns false", async () => {
+    let callCount = 0;
+
+    const { url } = createMockServer(() => {
+      callCount++;
+      return Response.json({ message: "client error" }, { status: 400 });
+    });
+
+    const apiErrorSchema = z.object({ message: z.string() });
+    const api = createApi({
+      baseUrl: url,
+      endpoints,
+      errorSchema: apiErrorSchema,
+      shouldValidateError: validateClientErrors,
+    });
+
+    const result = await api.getUser({
+      retry: {
+        times: 3,
+        delayMs: 0,
+        backoff: "constant",
+        shouldRetry: () => false,
+      },
+    });
+
+    expect(result.isErr()).toBe(true);
+    // shouldRetry returned false immediately — only 1 call (no retries)
+    expect(callCount).toBe(1);
+  });
+
+  test("shouldRetry can selectively retry only ApiError (not FetchError)", async () => {
+    let callCount = 0;
+
+    const { url } = createMockServer(() => {
+      callCount++;
+      return Response.json({ message: "server error" }, { status: 500 });
+    });
+
+    const apiErrorSchema = z.object({ message: z.string() });
+    const api = createApi({
+      baseUrl: url,
+      endpoints,
+      errorSchema: apiErrorSchema,
+      shouldValidateError: validateAllErrors,
+    });
+
+    const errorsReceived: string[] = [];
+
+    const result = await api.getUser({
+      retry: {
+        times: 2,
+        delayMs: 0,
+        backoff: "constant",
+        shouldRetry: (err) => {
+          errorsReceived.push(err._tag);
+          return err._tag === "ApiError";
+        },
+      },
+    });
+
+    expect(result.isErr()).toBe(true);
+    // All errors were ApiError and shouldRetry returned true each time → 3 calls total
+    expect(callCount).toBe(3);
+    expect(errorsReceived).toEqual(["ApiError", "ApiError"]);
+  });
+
+  test("validation errors are never retried regardless of shouldRetry", async () => {
+    let callCount = 0;
+
+    const { url } = createMockServer(() => {
+      callCount++;
+      return Response.json({ id: 1, name: "Alice" });
+    });
+
+    const endpointsWithInput = createEndpoints({
+      createUser: {
+        method: "POST",
+        path: "/users",
+        input: z.object({ name: z.string() }),
+        output: z.object({ id: z.number(), name: z.string() }),
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints: endpointsWithInput });
+
+    const result = await api.createUser(
+      // @ts-expect-error intentionally passing wrong input to trigger validation error
+      { name: 42 },
+      {
+        retry: {
+          times: 5,
+          delayMs: 0,
+          backoff: "constant",
+          shouldRetry: () => true,
+        },
+      }
+    );
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error._tag).toBe("InputValidationError");
+    }
+    // Validation happened locally; server was never called
+    expect(callCount).toBe(0);
+  });
+
+  test("backoff strategies compute correct delays", async () => {
+    const delays: number[] = [];
+    const origSetTimeout = globalThis.setTimeout;
+
+    // Patch setTimeout to capture delay values without waiting
+    globalThis.setTimeout = ((fn: () => void, ms: number) => {
+      delays.push(ms);
+      return origSetTimeout(fn, 0);
+    }) as typeof globalThis.setTimeout;
+
+    let callCount = 0;
+    const { url } = createMockServer(() => {
+      callCount++;
+      if (callCount < 4) {
+        return Response.json({ message: "fail" }, { status: 500 });
+      }
+      return Response.json({ id: 1, name: "Alice" });
+    });
+
+    const apiErrorSchema = z.object({ message: z.string() });
+    const api = createApi({
+      baseUrl: url,
+      endpoints,
+      errorSchema: apiErrorSchema,
+      shouldValidateError: validateAllErrors,
+    });
+
+    await api.getUser({
+      retry: { times: 3, delayMs: 100, backoff: "exponential" },
+    });
+
+    // Restore original
+    globalThis.setTimeout = origSetTimeout;
+
+    // exponential: 100*2^0=100, 100*2^1=200, 100*2^2=400
+    expect(delays).toEqual([100, 200, 400]);
+    expect(callCount).toBe(4);
   });
 });
