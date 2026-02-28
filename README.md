@@ -1,34 +1,67 @@
 # kanonic
 
-A lightweight, type-safe API client generator for TypeScript. Kanonic uses [Zod](https://zod.dev/) for robust validation and [Neverthrow](https://github.com/supermacro/neverthrow) for functional error handling, ensuring your API interactions are predictable and safe.
+A lightweight, type-safe HTTP client generator for TypeScript. Define your API contract once as a schema, get a fully-typed client back — with zero `try/catch` and exhaustive error handling built in.
+
+```ts
+const result = await api.getTodo({ params: { id: 1 } });
+
+result.match({
+  ok: (todo) => console.log(todo.title),  // todo is fully typed
+  err: (error) => console.error(error),   // error is a discriminated union
+});
+```
+
+## Why kanonic?
+
+Most HTTP clients give you a `Promise` that can throw anything. You write `try/catch`, hope the error has a `.message`, and move on. Kanonic takes a different approach.
+
+**Every endpoint call returns a `Result<T, E>`** — a value that is either `Ok` (with your data) or `Err` (with a typed, structured error). You are forced to handle both paths. TypeScript guarantees you can't accidentally access `.value` without checking first. And because errors are tagged, you can exhaustively handle every failure mode with a `switch` statement.
+
+**Schemas are the source of truth.** You define [Zod](https://zod.dev/) schemas for your requests, responses, path params, and query params. Kanonic validates at every boundary — input before sending, output after receiving — and surfaces validation failures as typed errors, not runtime exceptions.
+
+The result: an API layer that is predictable, self-documenting, and refactor-safe.
 
 ## Features
 
-- **🚀 Fully Type-Safe**: Automatically infer request and response types from your schemas.
-- **🛡️ Schema Validation**: Validate inputs (body, query, params) and outputs at runtime using Zod.
-- **🔴 Typed Error Responses**: Define schemas for error responses with flexible validation control.
-- **🛡️ Functional Error Handling**: No more `try/catch`. All methods return a `ResultAsync` containing either the data or a tagged error.
-- **📡 Streaming Support**: Built-in support for Server-Sent Events (SSE) with type-safe, validated streams.
-- **🏗️ Service-Oriented**: Easy to extend with a base `ApiService` class for shared logic.
-- **🏷️ Tagged Errors**: Rich, serializable error objects with metadata.
+- **Fully type-safe client** — request/response types inferred directly from your Zod schemas
+- **Result-typed returns** — every method returns `Promise<Result<T, ApiErrors<E>>>`, never throws
+- **Schema validation** — input (body, path params, query params) and output validated at runtime
+- **Typed error responses** — define a schema for error bodies; `ApiError.data` is typed when parsing succeeds
+- **Streaming (SSE)** — built-in Server-Sent Events support with optional per-chunk schema validation
+- **Service pattern** — `ApiService` base class for encapsulating and composing multiple API calls
+- **Authentication** — bearer token and HTTP Basic auth out of the box
+- **Tagged errors** — every error has a `_tag` for exhaustive `switch` matching
+
+## Installation
+
+```bash
+# bun
+bun add kanonic zod
+
+# npm
+npm install kanonic zod
+```
+
+Kanonic requires TypeScript 5+ and Zod 4+.
 
 ## Quick Start
 
-### 1. Define your Endpoints
+### 1. Define your endpoints
 
-Use `createEndpoints` to define your API contract. This provides excellent IDE autocompletion.
+`createEndpoints` is an identity function that captures the full type of your endpoint definitions for downstream inference.
 
-```typescript
+```ts
 import { createEndpoints } from "kanonic";
 import { z } from "zod";
 
 const todoSchema = z.object({
   id: z.number(),
+  userId: z.number(),
   title: z.string(),
   completed: z.boolean(),
 });
 
-export const endpoints = createEndpoints({
+const endpoints = createEndpoints({
   getTodo: {
     method: "GET",
     path: "/todos/:id",
@@ -38,165 +71,362 @@ export const endpoints = createEndpoints({
   createTodo: {
     method: "POST",
     path: "/todos",
-    input: z.object({ title: z.string() }),
+    input: z.object({ title: z.string(), userId: z.number() }),
     output: todoSchema,
+  },
+  updateTodo: {
+    method: "PATCH",
+    path: "/todos/:id",
+    params: z.object({ id: z.number() }),
+    input: z.object({ completed: z.boolean() }),
+    output: todoSchema,
+  },
+  deleteTodo: {
+    method: "DELETE",
+    path: "/todos/:id",
+    params: z.object({ id: z.number() }),
   },
 });
 ```
 
-### 2. Create the Client
+### 2. Create the client
 
-```typescript
+```ts
 import { createApi } from "kanonic";
-import { endpoints } from "./endpoints";
 
 const api = createApi({
-  baseUrl: "https://jsonplaceholder.typicode.com",
+  baseUrl: "https://api.example.com",
   endpoints,
 });
+```
 
-// Usage
+### 3. Call endpoints
+
+Every method returns a `Promise<Result<T, ApiErrors>>`. You never need a `try/catch`.
+
+```ts
+// Check with isOk()
 const result = await api.getTodo({ params: { id: 1 } });
 
 if (result.isOk()) {
-  console.log(result.value.title); // Type-safe!
+  console.log(result.value.title); // typed as string
 } else {
-  console.error(result.error.message);
+  console.error(result.error._tag); // "ApiError" | "FetchError" | ...
 }
+
+// Or use .match() for exhaustive handling
+await api.createTodo({ input: { title: "Buy milk", userId: 1 } }).then((result) =>
+  result.match({
+    ok: (todo) => console.log("Created:", todo.id),
+    err: (error) => console.error("Failed:", error.message),
+  })
+);
 ```
 
 ## Core Concepts
 
-### Functional Error Handling
+### The Result type
 
-Kanonic uses `neverthrow`'s `ResultAsync`. This forces you to handle potential errors explicitly, leading to more resilient code.
+Kanonic uses [`better-result`](https://github.com/dmmulroy/better-result) for all return values. A `Result<T, E>` is either `Ok<T>` or `Err<E>`. You can never accidentally access the value without handling the error case first.
 
-```typescript
+```ts
 const result = await api.getTodo({ params: { id: 1 } });
 
-result.match(
-  (todo) => console.log("Success:", todo),
-  (error) => {
-    switch (error._tag) {
-      case "ApiError":
-        console.error("API returned status:", error.statusCode);
-        // With errorSchema, error.data contains typed error response
-        if (error.data) {
-          console.error("Error message:", error.data.message);
-        } else {
-          console.error("Raw error:", error.text);
-        }
-        break;
-      case "InputValidationError":
-        console.error("Validation failed:", error.zodError.format());
-        break;
-      case "FetchError":
-        console.error("Network error:", error.message);
-        break;
-      // ... handle other cases
-    }
-  }
-);
-```
-
-**Combining multiple operations with `safeTry`:**
-
-```typescript
-import { safeTry, ok } from "neverthrow";
-
-const result = await safeTry(async function* () {
-  const user = yield* await api.getUser({ params: { id: 1 } });
-  const posts = yield* await api.getUserPosts({ params: { userId: user.id } });
-
-  return ok({ user, posts });
+// Pattern 1: match() — exhaustive, returns a value
+const title = result.match({
+  ok: (todo) => todo.title,
+  err: () => "Unknown",
 });
 
-// If any operation fails, the error is automatically propagated
-result.match(
-  ({ user, posts }) => console.log("Got user and posts"),
-  (error) => console.error("Something failed:", error)
-);
+// Pattern 2: isOk() guard — familiar, good for early returns
+if (result.isOk()) {
+  doSomethingWith(result.value); // narrowed to Ok
+}
+
+// Pattern 3: map/mapError — transform without unwrapping
+const uppercased = result.map((todo) => todo.title.toUpperCase());
+const withFallback = result.unwrapOr({ id: 0, title: "fallback", completed: false, userId: 0 });
 ```
 
-### Using ApiService
+### Composing multiple calls
 
-For more complex scenarios, you can wrap the client in an `ApiService`. This is great for combining multiple API calls into a single operation.
+Use `Result.gen` to sequence multiple API calls without nested `if` blocks. If any `yield*` produces an `Err`, the generator short-circuits and propagates that error directly — no additional error handling needed.
 
-```typescript
-import { ApiService } from "kanonic";
-import { ok, safeTry } from "neverthrow";
+```ts
+import { Result } from "better-result";
+
+const result = await Result.gen(async function* () {
+  // Each yield* either returns the value or short-circuits with the error
+  const user = yield* Result.await(api.getUser({ params: { id: 1 } }));
+  const posts = yield* Result.await(api.getUserPosts({ params: { userId: user.id } }));
+  const comments = yield* Result.await(api.getComments({ params: { postId: posts[0].id } }));
+
+  return Result.ok({ user, posts, comments });
+});
+
+// result is Result<{ user, posts, comments }, ApiErrors>
+result.match({
+  ok: ({ user, posts, comments }) => console.log(user.name, posts.length, comments.length),
+  err: (error) => console.error("One of the calls failed:", error._tag),
+});
+```
+
+### Error handling
+
+All errors are **tagged** with a `_tag` field. This enables exhaustive `switch` matching — TypeScript will warn you if you forget a case.
+
+```ts
+const result = await api.getTodo({ params: { id: 1 } });
+
+if (result.isErr()) {
+  const error = result.error;
+
+  switch (error._tag) {
+    case "FetchError":
+      // Network failure — fetch() itself threw
+      console.error("Network error:", error.message);
+      break;
+
+    case "ApiError":
+      // Server responded with status >= 400
+      console.error("HTTP", error.statusCode);
+      console.error("Body:", error.text); // raw response body, always available
+      break;
+
+    case "InputValidationError":
+      // Your input failed the endpoint's Zod schema before the request was sent
+      console.error("Invalid input:", error.zodError.issues);
+      break;
+
+    case "OutputValidationError":
+      // The server's response didn't match the output schema
+      console.error("Unexpected response shape:", error.zodError.issues);
+      break;
+
+    case "ParseError":
+      // Response body could not be read or JSON-parsed
+      console.error("Parse failure:", error.message);
+      break;
+  }
+}
+```
+
+### Typed error responses
+
+When your API returns structured error JSON (e.g. `{ code: "NOT_FOUND", message: "..." }`), you can define an `errorSchema` so that `ApiError.data` is fully typed.
+
+```ts
+import { createApi, validateClientErrors } from "kanonic";
 import { z } from "zod";
-import { endpoints } from "./endpoints";
 
-// Optional: Define error schema
 const errorSchema = z.object({
+  code: z.string(),
   message: z.string(),
-  code: z.string().optional(),
+  details: z.record(z.string(), z.unknown()).optional(),
 });
 
-class TodoService extends ApiService(endpoints, errorSchema) {
+const api = createApi({
+  baseUrl: "https://api.example.com",
+  endpoints,
+  errorSchema,
+  shouldValidateError: validateClientErrors, // parse 4xx errors
+});
+
+const result = await api.getUser({ params: { id: 999 } });
+
+if (result.isErr() && result.error._tag === "ApiError") {
+  const { error } = result;
+
+  if (error.data) {
+    // Typed: { code: string; message: string; details?: Record<string, unknown> }
+    console.error(error.data.code);    // "NOT_FOUND"
+    console.error(error.data.message); // "User not found"
+  } else {
+    // Parsing or validation failed — fall back to raw text
+    console.error(error.text);
+  }
+}
+```
+
+**Validation strategies** for `shouldValidateError`:
+
+| Strategy | Behavior |
+|---|---|
+| *(not set)* | No error body parsing, `error.data` is always `undefined` |
+| `validateClientErrors` | Parse 4xx responses only |
+| `validateAllErrors` | Parse all error responses (4xx and 5xx) |
+| `(statusCode) => boolean` | Custom predicate for full control |
+
+**Graceful fallback:** if JSON parsing or Zod validation fails on an error body, `error.data` is `undefined` and `error.text` always contains the raw response body. The client never throws.
+
+### Schema validation
+
+Kanonic validates at four points in the request lifecycle:
+
+**Input body** (`input` schema, non-GET only) — validated before the request is sent. Failure returns `InputValidationError` immediately without making a network call.
+
+```ts
+const endpoints = createEndpoints({
+  createUser: {
+    method: "POST",
+    path: "/users",
+    input: z.object({
+      name: z.string().min(1),
+      email: z.email(),
+      age: z.number().int().positive(),
+    }),
+    output: z.object({ id: z.number(), name: z.string() }),
+  },
+});
+```
+
+**Path params** (`params` schema) — substituted into the path via `:paramName` placeholders after validation.
+
+```ts
+// /users/:id → /users/42
+params: z.object({ id: z.number() })
+```
+
+**Query params** (`query` schema) — appended to the URL as a query string after validation. Arrays become repeated keys (`?tag=a&tag=b`). `null`/`undefined` values are omitted.
+
+```ts
+query: z.object({
+  page: z.number().optional(),
+  limit: z.number().optional(),
+  tags: z.array(z.string()).optional(),
+})
+```
+
+**Response output** (`output` schema) — the parsed JSON response is validated against the schema. Failure returns `OutputValidationError`. Set `validateOutput: false` to skip this step.
+
+To disable input validation globally: `validateInput: false`.
+
+### Authentication
+
+```ts
+// Bearer token
+const api = createApi({
+  baseUrl: "https://api.example.com",
+  endpoints,
+  auth: { type: "bearer", token: "your-jwt-or-api-key" },
+});
+
+// HTTP Basic
+const api = createApi({
+  baseUrl: "https://api.example.com",
+  endpoints,
+  auth: { type: "basic", username: "user", password: "pass" },
+});
+```
+
+### Custom headers
+
+```ts
+const api = createApi({
+  baseUrl: "https://api.example.com",
+  endpoints,
+  headers: {
+    "X-Api-Version": "2",
+    "Accept-Language": "en",
+  },
+});
+```
+
+### The ApiService class
+
+`ApiService` is a class factory for the service-oriented pattern. You bake in the endpoint definitions (and optionally an error schema) at class definition time, then instantiate the service with runtime configuration like `baseUrl` and `auth`.
+
+This pattern is useful when you want to:
+- Encapsulate related endpoints behind a service interface
+- Add domain-specific methods that compose multiple API calls
+- Share the client between methods without passing it around
+
+```ts
+import { ApiService, validateClientErrors } from "kanonic";
+import { Result } from "better-result";
+import { z } from "zod";
+
+const postSchema = z.object({ id: z.number(), title: z.string(), userId: z.number() });
+const commentSchema = z.object({ id: z.number(), postId: z.number(), body: z.string() });
+const userSchema = z.object({ id: z.number(), name: z.string(), email: z.string() });
+
+const endpoints = createEndpoints({
+  getPost:     { method: "GET", path: "/posts/:id",          params: z.object({ id: z.number() }),     output: postSchema },
+  getComments: { method: "GET", path: "/posts/:postId/comments", params: z.object({ postId: z.number() }), output: z.array(commentSchema) },
+  getUser:     { method: "GET", path: "/users/:id",          params: z.object({ id: z.number() }),     output: userSchema },
+});
+
+const errorSchema = z.object({ message: z.string() });
+
+class BlogService extends ApiService(endpoints, errorSchema) {
   constructor(baseUrl: string) {
-    super({ baseUrl });
+    super({ baseUrl, shouldValidateError: validateClientErrors });
   }
 
-  async getEnrichedTodo(id: number) {
-    const { api } = this;
+  // Compose multiple calls into a single typed result
+  async getEnrichedPost(id: number) {
+    const { api } = this; // destructure to preserve `this` inside the generator
 
-    return safeTry(async function* () {
-      const todo = yield* await api.getTodo({ params: { id } });
-      // Combine with other logic...
-      return ok({ ...todo, fetchedAt: new Date() });
+    return Result.gen(async function* () {
+      const post     = yield* Result.await(api.getPost({ params: { id } }));
+      const comments = yield* Result.await(api.getComments({ params: { postId: post.id } }));
+      const author   = yield* Result.await(api.getUser({ params: { id: post.userId } }));
+
+      return Result.ok({ post, comments, author });
     });
   }
 }
 
-const service = new TodoService("https://api.example.com");
-const result = await service.getEnrichedTodo(1);
+const blog = new BlogService("https://jsonplaceholder.typicode.com");
+
+const result = await blog.getEnrichedPost(1);
+
+result.match({
+  ok: ({ post, comments, author }) => {
+    console.log(`"${post.title}" by ${author.name} — ${comments.length} comments`);
+  },
+  err: (error) => console.error(error._tag, error.message),
+});
 ```
 
-**With typed errors:**
-
-When you pass an `errorSchema` to `ApiService`, all API calls through `service.api` will have typed error responses. The error schema is optional - if not provided, it works like before.
+> **Note:** Inside `Result.gen`, destructure `const { api } = this` before the generator function. Arrow functions don't apply here since the generator syntax requires `function*`, so `this` would be unbound inside.
 
 ### Streaming (SSE)
 
-Kanonic makes handling Server-Sent Events easy with full type safety and validation support.
+Kanonic has built-in support for Server-Sent Events. Set `stream: { enabled: true }` on an endpoint and the return type becomes `ReadableStream<T>` instead of a plain value.
 
-#### Basic Streaming (String)
+#### Untyped streaming
 
-```typescript
+Without an `output` schema, the stream emits raw strings — one per SSE `data:` line.
+
+```ts
 const endpoints = createEndpoints({
   streamUpdates: {
     method: "GET",
-    path: "/updates",
+    path: "/events",
     stream: { enabled: true },
   },
 });
 
-const api = createApi({ baseUrl: "...", endpoints });
+const api = createApi({ baseUrl: "https://api.example.com", endpoints });
 const result = await api.streamUpdates();
 
 if (result.isOk()) {
-  const stream = result.value; // ReadableStream<string>
-  const reader = stream.getReader();
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    console.log("Update received:", value);
+  for await (const line of result.value) { // ReadableStream<string>
+    console.log(line);
   }
 }
 ```
 
-#### Typed Streaming with Validation
+#### Typed streaming
 
-Add an `output` schema to get typed, validated streams:
+Add an `output` schema and each SSE data line is JSON-parsed and Zod-validated. Invalid chunks are silently skipped (with a `console.warn`) so the stream never aborts on a bad chunk.
 
-```typescript
+```ts
 const endpoints = createEndpoints({
   streamMessages: {
     method: "GET",
-    path: "/messages",
+    path: "/messages/stream",
     stream: { enabled: true },
     output: z.object({
       id: z.string(),
@@ -206,150 +436,108 @@ const endpoints = createEndpoints({
   },
 });
 
-const api = createApi({ baseUrl: "...", endpoints });
+const api = createApi({ baseUrl: "https://api.example.com", endpoints });
 const result = await api.streamMessages();
 
 if (result.isOk()) {
-  const stream = result.value; // ReadableStream<{ id: string, content: string, timestamp: number }>
-
-  for await (const message of stream) {
-    // message is fully typed!
-    console.log(message.content);
+  for await (const message of result.value) {
+    // message is { id: string; content: string; timestamp: number }
+    console.log(`[${message.id}] ${message.content}`);
   }
 }
 ```
 
-**How it works:**
+**How SSE lines are processed:**
 
-- **No output schema**: Returns `ReadableStream<string>` with raw SSE data
-- **Output schema provided**: Returns `ReadableStream<T>` where each line is parsed as JSON
-  - `validateOutput: true` (default): Parses and validates each chunk
-  - `validateOutput: false`: Parses JSON but skips validation
-- **Invalid chunks**: Automatically skipped with a warning (stream continues)
+- Lines not starting with `data:` are ignored (comments, event names, etc.)
+- Empty `data:` values are ignored
+- `data: [DONE]` (OpenAI-style sentinel) is ignored
+- Incomplete lines split across network chunks are buffered and reassembled
+- If `output` is provided and `validateOutput: true`, invalid chunks are skipped with a warning
+- HTTP errors before the stream starts return `ApiError` in the `Err` path — the `ReadableStream` is never created
 
-### Authentication
+## Error reference
 
-Support for Bearer and Basic authentication is built-in.
+All errors extend `Error` and are safe to `throw`, serialize with `toJSON()`, and discriminate with `instanceof` or `._tag`.
 
-```typescript
-const api = createApi({
-  baseUrl: "...",
-  endpoints,
-  auth: {
-    type: "bearer",
-    token: "your-token-here",
-  },
-});
-```
+| Class | `_tag` | When | Key fields |
+|---|---|---|---|
+| `ApiError<T>` | `"ApiError"` | Server returned status >= 400 | `statusCode: number`, `text: string`, `data?: T` |
+| `FetchError` | `"FetchError"` | `fetch()` threw (network down, bad URL, etc.) | `message: string`, `cause?: unknown` |
+| `ParseError` | `"ParseError"` | Response body could not be read or parsed | `message: string`, `cause?: unknown` |
+| `InputValidationError` | `"InputValidationError"` | Request data failed Zod validation | `message: string`, `zodError: z.ZodError` |
+| `OutputValidationError` | `"OutputValidationError"` | Response data failed Zod validation | `message: string`, `zodError: z.ZodError` |
 
-### Typed Error Responses
+All errors have a `_tag` discriminant. `ApiError<T>` carries a generic that types `error.data` when an `errorSchema` is used.
 
-Define a schema for error responses to get type-safe error handling. When the API returns an error (status >= 400) with structured JSON, Kanonic can parse and validate it.
+## API reference
 
-```typescript
-import { createApi, validateClientErrors } from "kanonic";
-import { z } from "zod";
+### `createEndpoints(endpoints)`
 
-// Define your error response schema
-const errorSchema = z.object({
-  message: z.string(),
-  code: z.string().optional(),
-  details: z.record(z.unknown()).optional(),
-});
+Identity function. Pass your endpoint record; get back a fully-typed version. Use this to trigger TypeScript inference before passing endpoints to `createApi` or `ApiService`.
 
-const api = createApi({
-  baseUrl: "https://api.example.com",
-  endpoints,
-  errorSchema, // Optional: validates only 4xx errors by default
-  shouldValidateError: validateClientErrors, // Optional: customize validation
-});
+### `createApi(options)`
 
-const result = await api.getUser({ params: { id: 1 } });
+Creates the typed API client.
 
-result.match(
-  (user) => console.log("Success:", user),
-  (error) => {
-    if (error._tag === "ApiError") {
-      // error.data is typed based on your errorSchema
-      if (error.data) {
-        console.error(error.data.message); // Type-safe!
-        console.error(error.data.code);
-      } else {
-        // Fallback to raw text when parsing/validation fails
-        console.error(error.text);
-      }
-      console.error("Status:", error.statusCode);
-    }
-  }
-);
-```
-
-**Validation strategies:**
-
-- **Default**: Validates only 4xx errors (client errors) when `errorSchema` is provided
-- **`validateClientErrors`**: Same as default (validates 4xx only)
-- **`validateAllErrors`**: Validates all error responses (both 4xx and 5xx)
-- **Custom function**: `shouldValidateError: (statusCode) => statusCode === 400 || statusCode === 422`
-
-**Graceful fallback:**
-
-- If JSON parsing fails → `error.data` is `undefined`, `error.text` contains raw response
-- If validation fails → `error.data` is `undefined`, `error.text` contains raw response
-- `error.text` is always available as a fallback
-
-## Project Structure
-
-This is a monorepo managed with Bun workspaces:
-
-- **`packages/kanonic`**: The core library
-- **`examples/todos`**: Complete example using JSONPlaceholder API
-- **`examples/stream`**: Streaming (SSE) example with typed validation
-- **`examples/errors`**: Typed error response handling examples
-
-## Error Types
-
-Kanonic provides several built-in tagged error classes based on the `TaggedError` mixin:
-
-- **`ApiError<T>`**: Returned when the server responds with a status >= 400. Contains:
-  - `statusCode`: HTTP status code
-  - `text`: Raw response body (always available)
-  - `data?: T`: Parsed error data (when `errorSchema` provided and validation succeeds)
-  - `cause?`: Optional underlying error
-- **`FetchError`**: Returned when the network request fails. Contains `message` and optional `cause`.
-- **`ParseError`**: Returned when the response body cannot be parsed. Contains `message` and optional `cause`.
-- **`InputValidationError`**: Returned when the request data fails Zod validation. Contains `message` and `zodError`.
-- **`OutputValidationError`**: Returned when the server response fails Zod validation. Contains `message` and `zodError`.
-
-All errors have a `_tag` field for discriminated union matching.
-
-## Configuration Options
-
-### `createApi` Options
-
-```typescript
+```ts
 createApi({
-  baseUrl: string;              // Base URL for all requests
-  endpoints: T;                 // Endpoint definitions
-  headers?: Record<string, string>; // Optional default headers
-  auth?: Auth;                  // Optional authentication (bearer or basic)
-  validateOutput?: boolean;     // Validate response data (default: true)
-  validateInput?: boolean;      // Validate request data (default: true)
-  errorSchema?: z.ZodType<E>;   // Optional schema for error responses
-  shouldValidateError?: (statusCode: number) => boolean; // Control error validation
+  baseUrl: string;                                        // Required
+  endpoints: T;                                           // Required — from createEndpoints()
+  headers?: Record<string, string>;                       // Merged into every request
+  auth?: { type: "bearer"; token: string }
+        | { type: "basic"; username: string; password: string };
+  validateInput?: boolean;                                // Default: true
+  validateOutput?: boolean;                               // Default: true
+  errorSchema?: z.ZodType<E>;                             // Schema for error bodies
+  shouldValidateError?: (statusCode: number) => boolean;  // Which errors to parse
 })
 ```
 
-### Endpoint Definition
+Returns an `ApiClient<T, E>` object where each key in `T` is a function:
+- **No options required** (no `input`, `params`, or `query`): `() => Promise<Result<...>>`
+- **Options required**: `(options: { input?, params?, query? }) => Promise<Result<...>>`
 
-```typescript
+### `ApiService(endpoints, errorSchema?)`
+
+Class factory. Returns a base class that your service can extend.
+
+```ts
+class MyService extends ApiService(endpoints, errorSchema) {
+  constructor(baseUrl: string) {
+    super({
+      baseUrl,                                              // Required
+      headers?,                                            // Optional
+      auth?,                                               // Optional
+      validateInput?,                                      // Optional
+      validateOutput?,                                     // Optional
+      shouldValidateError?,                                // Optional
+    });
+  }
+}
+```
+
+The service exposes `this.api` (and `protected this.client`) as the typed `ApiClient<T, E>`.
+
+### `validateClientErrors`
+
+Preset `shouldValidateError` predicate. Returns `true` for 4xx status codes only.
+
+### `validateAllErrors`
+
+Preset `shouldValidateError` predicate. Returns `true` for all error responses.
+
+### Endpoint shape
+
+```ts
 {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-  path: `/${string}`;           // Must start with /
-  params?: z.ZodType;           // Path parameters (e.g., /users/:id)
-  query?: z.ZodType;            // Query parameters
-  input?: z.ZodType;            // Request body (not for GET)
-  output?: z.ZodType;           // Response body
-  stream?: { enabled: true };   // Enable SSE streaming
+  path: `/${string}`;          // Must start with /
+  params?: z.ZodType;          // Path parameter schema (:paramName substitution)
+  query?: z.ZodType;           // Query string schema
+  input?: z.ZodType;           // Request body schema (non-GET only)
+  output?: z.ZodType;          // Response body schema
+  stream?: { enabled: true };  // Enable SSE streaming
 }
 ```
 
@@ -360,27 +548,24 @@ createApi({
 bun install
 
 # Run tests
-bun test
-
-# Run linter
-bun run check
-
-# Auto-fix linting issues
-bun run fix
+bun test --cwd packages/kanonic
 
 # Run examples
-bun run examples/todos/index.ts
-bun run examples/stream/index.ts
-bun run examples/errors/index.ts
+bun run --cwd examples/app client.ts   # createApi, error handling, validation
+bun run --cwd examples/app service.ts  # ApiService, Result.gen composition
+bun run --cwd examples/app stream.ts   # SSE streaming with typed chunks
 ```
 
-## Contributing
+## Project Structure
 
-Contributions are welcome! Please ensure:
-
-1. All tests pass (`bun test`)
-2. Code follows the project style (`bun run check`)
-3. New features include tests and documentation
+```
+packages/kanonic/   core library
+examples/app/
+  endpoints.ts      shared schemas and endpoint definitions
+  client.ts         createApi — typed errors, validation, result chaining
+  service.ts        ApiService — Result.gen composition across multiple calls
+  stream.ts         SSE streaming with per-chunk Zod validation
+```
 
 ## License
 
