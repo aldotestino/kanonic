@@ -1,0 +1,14 @@
+{
+  "name": "@kanonic/fetch-v2",
+  "private": true,
+  "type": "module",
+  "module": "index.ts",
+  "devDependencies": {
+    "@types/bun": "latest",
+    "better-result": "^2.7.0",
+    "zod": "^4.3.6"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
