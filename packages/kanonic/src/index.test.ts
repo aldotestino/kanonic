@@ -2139,3 +2139,564 @@ describe("Nested Endpoints", () => {
     expect(todosResult.isOk()).toBe(true);
   });
 });
+
+// ─── Plugin System ────────────────────────────────────────────────────────────
+describe("Plugin System", () => {
+  // Helpers
+  const makeEndpoints = () =>
+    createEndpoints({
+      item: {
+        method: "GET" as const,
+        output: z.object({ id: z.number() }),
+        params: z.object({ id: z.number() }),
+        path: "/items/:id",
+      },
+      create: {
+        input: z.object({ name: z.string() }),
+        method: "POST" as const,
+        output: z.object({ id: z.number(), name: z.string() }),
+        path: "/items",
+      },
+    });
+
+  test("plugin without hooks does not break request", async () => {
+    const { url } = createMockServer(() => Response.json({ id: 1 }));
+
+    const api = createApi({
+      baseUrl: url,
+      endpoints: makeEndpoints(),
+      plugins: [{ id: "noop", name: "Noop", version: "1.0.0" }],
+    });
+
+    const result = await api.item({ params: { id: 1 } });
+    expect(result.isOk()).toBe(true);
+  });
+
+  test("init can rewrite url and options", async () => {
+    let capturedUrl = "";
+
+    const { url } = createMockServer((req) => {
+      capturedUrl = req.url;
+      return Response.json({ id: 1 });
+    });
+
+    const api = createApi({
+      baseUrl: url,
+      endpoints: makeEndpoints(),
+      plugins: [
+        {
+          id: "url-rewriter",
+          name: "URL Rewriter",
+          version: "1.0.0",
+          async init(u, options) {
+            return { url: u.replace("/items/1", "/items/99"), options };
+          },
+        },
+      ],
+    });
+
+    await api.item({ params: { id: 1 } });
+    expect(capturedUrl).toContain("/items/99");
+  });
+
+  test("init runs only once per invocation, not on each retry", async () => {
+    let initCallCount = 0;
+    let attemptCount = 0;
+
+    const { url } = createMockServer(() => {
+      attemptCount += 1;
+      return new Response("error", { status: 503 });
+    });
+
+    const api = createApi({
+      baseUrl: url,
+      endpoints: makeEndpoints(),
+      plugins: [
+        {
+          id: "counter",
+          name: "Counter",
+          version: "1.0.0",
+          async init(u, options) {
+            initCallCount += 1;
+            return { url: u, options };
+          },
+        },
+      ],
+    });
+
+    await api.item(
+      { params: { id: 1 } },
+      { retry: { backoff: "constant", delayMs: 0, times: 2 } }
+    );
+
+    expect(initCallCount).toBe(1);
+    expect(attemptCount).toBe(3); // initial + 2 retries
+  });
+
+  test("onRequest receives merged context and can mutate headers", async () => {
+    let capturedHeader = "";
+
+    const { url } = createMockServer((req) => {
+      capturedHeader = req.headers.get("x-plugin") ?? "";
+      return Response.json({ id: 1 });
+    });
+
+    const api = createApi({
+      baseUrl: url,
+      endpoints: makeEndpoints(),
+      plugins: [
+        {
+          id: "header-adder",
+          name: "Header Adder",
+          version: "1.0.0",
+          hooks: {
+            async onRequest(ctx) {
+              return {
+                ...ctx,
+                headers: { ...ctx.headers, "x-plugin": "injected" },
+              };
+            },
+          },
+        },
+      ],
+    });
+
+    await api.item({ params: { id: 1 } });
+    expect(capturedHeader).toBe("injected");
+  });
+
+  test("multiple onRequest hooks are applied in order (chain)", async () => {
+    const order: number[] = [];
+
+    const { url } = createMockServer(() => Response.json({ id: 1 }));
+
+    const api = createApi({
+      baseUrl: url,
+      endpoints: makeEndpoints(),
+      plugins: [
+        {
+          id: "p1",
+          name: "P1",
+          version: "1.0.0",
+          hooks: {
+            async onRequest(ctx) {
+              order.push(1);
+              return ctx;
+            },
+          },
+        },
+        {
+          id: "p2",
+          name: "P2",
+          version: "1.0.0",
+          hooks: {
+            async onRequest(ctx) {
+              order.push(2);
+              return ctx;
+            },
+          },
+        },
+        {
+          id: "p3",
+          name: "P3",
+          version: "1.0.0",
+          hooks: {
+            async onRequest(ctx) {
+              order.push(3);
+              return ctx;
+            },
+          },
+        },
+      ],
+    });
+
+    await api.item({ params: { id: 1 } });
+    expect(order).toEqual([1, 2, 3]);
+  });
+
+  test("onRequest context mutations are visible to subsequent plugins", async () => {
+    let finalHeader = "";
+
+    const { url } = createMockServer((req) => {
+      finalHeader = req.headers.get("x-chain") ?? "";
+      return Response.json({ id: 1 });
+    });
+
+    const api = createApi({
+      baseUrl: url,
+      endpoints: makeEndpoints(),
+      plugins: [
+        {
+          id: "p1",
+          name: "P1",
+          version: "1.0.0",
+          hooks: {
+            async onRequest(ctx) {
+              return { ...ctx, headers: { ...ctx.headers, "x-chain": "A" } };
+            },
+          },
+        },
+        {
+          id: "p2",
+          name: "P2",
+          version: "1.0.0",
+          hooks: {
+            async onRequest(ctx) {
+              return {
+                ...ctx,
+                headers: {
+                  ...ctx.headers,
+                  "x-chain": `${ctx.headers["x-chain"]}B`,
+                },
+              };
+            },
+          },
+        },
+      ],
+    });
+
+    await api.item({ params: { id: 1 } });
+    expect(finalHeader).toBe("AB");
+  });
+
+  test("onResponse can replace the response", async () => {
+    const { url } = createMockServer(() => Response.json({ id: 99 }));
+
+    const api = createApi({
+      baseUrl: url,
+      endpoints: makeEndpoints(),
+      plugins: [
+        {
+          id: "response-replacer",
+          name: "Response Replacer",
+          version: "1.0.0",
+          hooks: {
+            async onResponse(_ctx, _response) {
+              return Response.json({ id: 42 });
+            },
+          },
+        },
+      ],
+    });
+
+    const result = await api.item({ params: { id: 99 } });
+    expect(result.isOk()).toBe(true);
+    expect(result.unwrap().id).toBe(42);
+  });
+
+  test("onSuccess is called with parsed data on success", async () => {
+    let capturedData: unknown = null;
+
+    const { url } = createMockServer(() => Response.json({ id: 7 }));
+
+    const api = createApi({
+      baseUrl: url,
+      endpoints: makeEndpoints(),
+      plugins: [
+        {
+          id: "spy",
+          name: "Spy",
+          version: "1.0.0",
+          hooks: {
+            async onSuccess(_ctx, data) {
+              capturedData = data;
+            },
+          },
+        },
+      ],
+    });
+
+    const result = await api.item({ params: { id: 7 } });
+    expect(result.isOk()).toBe(true);
+    expect(capturedData).toEqual({ id: 7 });
+  });
+
+  test("onError is called with error on failure", async () => {
+    let capturedTag = "";
+
+    const { url } = createMockServer(
+      () => new Response("not found", { status: 404 })
+    );
+
+    const api = createApi({
+      baseUrl: url,
+      endpoints: makeEndpoints(),
+      plugins: [
+        {
+          id: "spy",
+          name: "Spy",
+          version: "1.0.0",
+          hooks: {
+            async onError(_ctx, error) {
+              capturedTag = error._tag;
+            },
+          },
+        },
+      ],
+    });
+
+    const result = await api.item({ params: { id: 1 } });
+    expect(result.isErr()).toBe(true);
+    expect(capturedTag).toBe("ApiError");
+  });
+
+  test("onSuccess and onError are each called exactly once regardless of retries", async () => {
+    let successCount = 0;
+    let errorCount = 0;
+
+    const { url } = createMockServer(
+      () => new Response("error", { status: 500 })
+    );
+
+    const api = createApi({
+      baseUrl: url,
+      endpoints: makeEndpoints(),
+      plugins: [
+        {
+          id: "counter",
+          name: "Counter",
+          version: "1.0.0",
+          hooks: {
+            async onSuccess() {
+              successCount += 1;
+            },
+            async onError() {
+              errorCount += 1;
+            },
+          },
+        },
+      ],
+    });
+
+    await api.item(
+      { params: { id: 1 } },
+      { retry: { backoff: "constant", delayMs: 0, times: 2 } }
+    );
+
+    expect(successCount).toBe(0);
+    expect(errorCount).toBe(1);
+  });
+
+  test("onRetry is called once per retry (not on final outcome)", async () => {
+    let retryCount = 0;
+    let attemptCount = 0;
+
+    const { url } = createMockServer(() => {
+      attemptCount += 1;
+      if (attemptCount < 3) {
+        return new Response("fail", { status: 503 });
+      }
+      return Response.json({ id: 1 });
+    });
+
+    const api = createApi({
+      baseUrl: url,
+      endpoints: makeEndpoints(),
+      plugins: [
+        {
+          id: "retry-spy",
+          name: "Retry Spy",
+          version: "1.0.0",
+          hooks: {
+            async onRetry() {
+              retryCount += 1;
+            },
+          },
+        },
+      ],
+    });
+
+    const result = await api.item(
+      { params: { id: 1 } },
+      { retry: { backoff: "constant", delayMs: 0, times: 3 } }
+    );
+
+    expect(result.isOk()).toBe(true);
+    expect(retryCount).toBe(2); // failed twice before succeeding
+    expect(attemptCount).toBe(3);
+  });
+
+  test("onRequest and onResponse fire on every attempt during retries", async () => {
+    let requestCount = 0;
+    let responseCount = 0;
+    let attemptCount = 0;
+
+    const { url } = createMockServer(() => {
+      attemptCount += 1;
+      return new Response("fail", { status: 503 });
+    });
+
+    const api = createApi({
+      baseUrl: url,
+      endpoints: makeEndpoints(),
+      plugins: [
+        {
+          id: "counter",
+          name: "Counter",
+          version: "1.0.0",
+          hooks: {
+            async onRequest(ctx) {
+              requestCount += 1;
+              return ctx;
+            },
+            async onResponse(_ctx, res) {
+              responseCount += 1;
+              return res;
+            },
+          },
+        },
+      ],
+    });
+
+    await api.item(
+      { params: { id: 1 } },
+      { retry: { backoff: "constant", delayMs: 0, times: 2 } }
+    );
+
+    expect(attemptCount).toBe(3);
+    expect(requestCount).toBe(3);
+    expect(responseCount).toBe(3);
+  });
+
+  test("validation errors bypass all plugin hooks", async () => {
+    const calls: string[] = [];
+
+    const endpoints = createEndpoints({
+      create: {
+        input: z.object({ name: z.string().min(1) }),
+        method: "POST" as const,
+        output: z.object({ id: z.number() }),
+        path: "/items",
+      },
+    });
+
+    const api = createApi({
+      baseUrl: "http://localhost",
+      endpoints,
+      plugins: [
+        {
+          id: "spy",
+          name: "Spy",
+          version: "1.0.0",
+          async init(u, options) {
+            calls.push("init");
+            return { url: u, options };
+          },
+          hooks: {
+            async onRequest(ctx) {
+              calls.push("onRequest");
+              return ctx;
+            },
+            async onResponse(_ctx, res) {
+              calls.push("onResponse");
+              return res;
+            },
+            async onSuccess() {
+              calls.push("onSuccess");
+            },
+            async onError() {
+              calls.push("onError");
+            },
+          },
+        },
+      ],
+    });
+
+    const result = await api.create({ input: { name: "" } });
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error._tag).toBe("InputValidationError");
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  test("plugin hooks that throw do not affect the final result (onSuccess)", async () => {
+    const { url } = createMockServer(() => Response.json({ id: 1 }));
+
+    const api = createApi({
+      baseUrl: url,
+      endpoints: makeEndpoints(),
+      plugins: [
+        {
+          id: "thrower",
+          name: "Thrower",
+          version: "1.0.0",
+          hooks: {
+            async onSuccess() {
+              throw new Error("plugin explosion");
+            },
+          },
+        },
+      ],
+    });
+
+    const result = await api.item({ params: { id: 1 } });
+    expect(result.isOk()).toBe(true);
+  });
+
+  test("plugin hooks that throw do not affect the final result (onError)", async () => {
+    const { url } = createMockServer(
+      () => new Response("nope", { status: 500 })
+    );
+
+    const api = createApi({
+      baseUrl: url,
+      endpoints: makeEndpoints(),
+      plugins: [
+        {
+          id: "thrower",
+          name: "Thrower",
+          version: "1.0.0",
+          hooks: {
+            async onError() {
+              throw new Error("plugin explosion");
+            },
+          },
+        },
+      ],
+    });
+
+    const result = await api.item({ params: { id: 1 } });
+    expect(result.isErr()).toBe(true);
+  });
+
+  test("plugins work with nested endpoint groups", async () => {
+    let capturedHeader = "";
+
+    const { url } = createMockServer((req) => {
+      capturedHeader = req.headers.get("x-nested") ?? "";
+      return Response.json({ id: 1 });
+    });
+
+    const endpoints = createEndpoints({
+      items: {
+        get: {
+          method: "GET" as const,
+          output: z.object({ id: z.number() }),
+          params: z.object({ id: z.number() }),
+          path: "/items/:id",
+        },
+      },
+    });
+
+    const api = createApi({
+      baseUrl: url,
+      endpoints,
+      plugins: [
+        {
+          id: "header-adder",
+          name: "Header Adder",
+          version: "1.0.0",
+          hooks: {
+            async onRequest(ctx) {
+              return { ...ctx, headers: { ...ctx.headers, "x-nested": "yes" } };
+            },
+          },
+        },
+      ],
+    });
+
+    await api.items.get({ params: { id: 1 } });
+    expect(capturedHeader).toBe("yes");
+  });
+});

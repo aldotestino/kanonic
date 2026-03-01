@@ -7,6 +7,8 @@ import type {
   Auth,
   Endpoint,
   EndpointTree,
+  Plugin,
+  RequestContext,
   RetryOptions,
 } from "./types";
 
@@ -217,4 +219,120 @@ export const processStreamChunk = (
   }
 
   return processedData;
+};
+
+// ─── Plugin pipeline runners ─────────────────────────────────────────────────
+
+/**
+ * Runs each plugin's `init` function sequentially, threading the url/options
+ * through each one. Returns the final (potentially mutated) url and options.
+ */
+export const runPluginInit = async <E>(
+  plugins: Plugin<E>[],
+  url: string,
+  options: RequestInit
+): Promise<{ url: string; options: RequestInit }> => {
+  let current = { url, options };
+  for (const plugin of plugins) {
+    if (plugin.init) {
+      current = await plugin.init(current.url, current.options);
+    }
+  }
+  return current;
+};
+
+/**
+ * Runs each plugin's `onRequest` hook sequentially, threading the
+ * `RequestContext` through each one. Returns the final context.
+ */
+export const runOnRequest = async <E>(
+  plugins: Plugin<E>[],
+  ctx: RequestContext
+): Promise<RequestContext> => {
+  let current = ctx;
+  for (const plugin of plugins) {
+    if (plugin.hooks?.onRequest) {
+      current = await plugin.hooks.onRequest(current);
+    }
+  }
+  return current;
+};
+
+/**
+ * Runs each plugin's `onResponse` hook sequentially, threading the
+ * `Response` through each one. Returns the final response.
+ */
+export const runOnResponse = async <E>(
+  plugins: Plugin<E>[],
+  ctx: RequestContext,
+  response: Response
+): Promise<Response> => {
+  let current = response;
+  for (const plugin of plugins) {
+    if (plugin.hooks?.onResponse) {
+      current = await plugin.hooks.onResponse(ctx, current);
+    }
+  }
+  return current;
+};
+
+/**
+ * Calls each plugin's `onSuccess` hook sequentially (fire-and-forget).
+ * Errors thrown by individual plugins are silently swallowed so they cannot
+ * affect the caller's result.
+ */
+export const runOnSuccess = async <E>(
+  plugins: Plugin<E>[],
+  ctx: RequestContext,
+  data: unknown
+): Promise<void> => {
+  for (const plugin of plugins) {
+    if (plugin.hooks?.onSuccess) {
+      try {
+        await plugin.hooks.onSuccess(ctx, data);
+      } catch {
+        // swallow — fire-and-forget
+      }
+    }
+  }
+};
+
+/**
+ * Calls each plugin's `onError` hook sequentially (fire-and-forget).
+ * Errors thrown by individual plugins are silently swallowed.
+ */
+export const runOnError = async <E>(
+  plugins: Plugin<E>[],
+  ctx: RequestContext,
+  error: ApiErrors<E>
+): Promise<void> => {
+  for (const plugin of plugins) {
+    if (plugin.hooks?.onError) {
+      try {
+        await plugin.hooks.onError(ctx, error);
+      } catch {
+        // swallow — fire-and-forget
+      }
+    }
+  }
+};
+
+/**
+ * Calls each plugin's `onRetry` hook sequentially (fire-and-forget).
+ * Errors thrown by individual plugins are silently swallowed.
+ */
+export const runOnRetry = async <E>(
+  plugins: Plugin<E>[],
+  ctx: RequestContext,
+  error: FetchError | ApiError<E>
+): Promise<void> => {
+  for (const plugin of plugins) {
+    if (plugin.hooks?.onRetry) {
+      try {
+        await plugin.hooks.onRetry(ctx, error);
+      } catch {
+        // swallow — fire-and-forget
+      }
+    }
+  }
 };

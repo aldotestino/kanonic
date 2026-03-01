@@ -6,24 +6,35 @@ import {
   OutputValidationError,
   ParseError,
 } from "./errors";
+import type { ApiError, FetchError } from "./errors";
 import type {
   ApiClient,
   ApiErrors,
   Auth,
   Endpoint,
   EndpointTree,
+  Plugin,
+  RequestContext,
   RequestOptions,
+  RetryOptions,
 } from "./types";
 import {
   buildAuthHeader,
   buildUrl,
   extractDataLine,
+  getRetryDelay,
   isEndpoint,
   parseErrorResponse,
   processStreamChunk,
+  runOnError,
+  runOnRequest,
+  runOnResponse,
+  runOnRetry,
+  runOnSuccess,
+  runPluginInit,
   safeFetch,
   safeJsonParse,
-  withRetry,
+  sleep,
 } from "./utils";
 
 const handleJsonResponse = <E>(
@@ -166,6 +177,111 @@ const handleStreamResponse = <E>(
     return Result.ok(stream);
   });
 
+// Validates input, params, and query against endpoint schemas.
+// Returns Result.err on first failure, or Ok with the validated values.
+const validateSchemaOptions = <E>(
+  endpoint: Endpoint,
+  schemaOptions:
+    | {
+        input?: unknown;
+        params?: Record<string, unknown>;
+        query?: Record<string, unknown>;
+      }
+    | undefined,
+  validateInput: boolean
+): Result<
+  {
+    input: unknown;
+    params: Record<string, unknown> | undefined;
+    query: Record<string, unknown> | undefined;
+  },
+  ApiErrors<E>
+> => {
+  let validatedInput = schemaOptions?.input;
+  if (
+    validateInput &&
+    endpoint.method !== "GET" &&
+    "input" in endpoint &&
+    endpoint.input
+  ) {
+    const inputResult = endpoint.input.safeParse(schemaOptions?.input);
+    if (!inputResult.success) {
+      return Result.err(
+        new InputValidationError({
+          message: "Invalid input",
+          zodError: inputResult.error,
+        })
+      );
+    }
+    validatedInput = inputResult.data;
+  }
+
+  let validatedParams: Record<string, unknown> | undefined =
+    schemaOptions?.params;
+  if (validateInput && endpoint.params) {
+    const paramsResult = endpoint.params.safeParse(schemaOptions?.params);
+    if (!paramsResult.success) {
+      return Result.err(
+        new InputValidationError({
+          message: "Invalid params",
+          zodError: paramsResult.error,
+        })
+      );
+    }
+    validatedParams = paramsResult.data as Record<string, unknown>;
+  }
+
+  let validatedQuery: Record<string, unknown> | undefined =
+    schemaOptions?.query;
+  if (validateInput && endpoint.query) {
+    const queryResult = endpoint.query.safeParse(schemaOptions?.query);
+    if (!queryResult.success) {
+      return Result.err(
+        new InputValidationError({
+          message: "Invalid query",
+          zodError: queryResult.error,
+        })
+      );
+    }
+    validatedQuery = queryResult.data as Record<string, unknown>;
+  }
+
+  return Result.ok({
+    input: validatedInput,
+    params: validatedParams,
+    query: validatedQuery,
+  });
+};
+
+// Runs the retry loop, firing the onRetry plugin hook before each sleep.
+const executeWithPluginRetry = async <E>(
+  attempt: () => Promise<Result<unknown, ApiErrors<E>>>,
+  retry: RetryOptions<E>,
+  plugins: Plugin<E>[],
+  stableCtx: RequestContext
+): Promise<Result<unknown, ApiErrors<E>>> => {
+  const shouldRetryFn = retry.shouldRetry ?? (() => true);
+  let lastResult = await attempt();
+
+  for (let i = 0; i < retry.times; i += 1) {
+    if (lastResult.isOk()) {
+      break;
+    }
+    const { error } = lastResult;
+    if (error._tag !== "FetchError" && error._tag !== "ApiError") {
+      break;
+    }
+    if (!shouldRetryFn(error as Parameters<typeof shouldRetryFn>[0])) {
+      break;
+    }
+    await runOnRetry(plugins, stableCtx, error as FetchError | ApiError<E>);
+    await sleep(getRetryDelay(retry, i));
+    lastResult = await attempt();
+  }
+
+  return lastResult;
+};
+
 // Builds the endpoint function for a single leaf endpoint
 const buildEndpointFn = <E>(
   endpoint: Endpoint,
@@ -175,6 +291,7 @@ const buildEndpointFn = <E>(
   globalRestOptions: Record<string, unknown>,
   validateInput: boolean,
   validateOutput: boolean,
+  plugins: Plugin<E>[],
   errorSchema?: z.ZodType<E>,
   shouldValidateError?: (statusCode: number) => boolean
 ) => {
@@ -209,58 +326,23 @@ const buildEndpointFn = <E>(
       ...callRestOptions
     } = callRequestOptions ?? {};
 
-    // --- Validation ---
-    let validatedInput = schemaOptions?.input;
-    if (
-      validateInput &&
-      endpoint.method !== "GET" &&
-      "input" in endpoint &&
-      endpoint.input
-    ) {
-      const inputResult = endpoint.input.safeParse(schemaOptions?.input);
-      if (!inputResult.success) {
-        return Result.err(
-          new InputValidationError({
-            message: "Invalid input",
-            zodError: inputResult.error,
-          })
-        );
-      }
-      validatedInput = inputResult.data;
+    // --- Validation --- (bypasses plugins; no network I/O)
+    const validationResult = validateSchemaOptions<E>(
+      endpoint,
+      schemaOptions,
+      validateInput
+    );
+    if (validationResult.isErr()) {
+      return validationResult;
     }
-
-    let validatedParams: Record<string, unknown> | undefined =
-      schemaOptions?.params;
-    if (validateInput && endpoint.params) {
-      const paramsResult = endpoint.params.safeParse(schemaOptions?.params);
-      if (!paramsResult.success) {
-        return Result.err(
-          new InputValidationError({
-            message: "Invalid params",
-            zodError: paramsResult.error,
-          })
-        );
-      }
-      validatedParams = paramsResult.data as Record<string, unknown>;
-    }
-
-    let validatedQuery: Record<string, unknown> | undefined =
-      schemaOptions?.query;
-    if (validateInput && endpoint.query) {
-      const queryResult = endpoint.query.safeParse(schemaOptions?.query);
-      if (!queryResult.success) {
-        return Result.err(
-          new InputValidationError({
-            message: "Invalid query",
-            zodError: queryResult.error,
-          })
-        );
-      }
-      validatedQuery = queryResult.data as Record<string, unknown>;
-    }
+    const {
+      input: validatedInput,
+      params: validatedParams,
+      query: validatedQuery,
+    } = validationResult.value;
 
     // --- Build URL and merged options ---
-    const url = buildUrl({
+    const resolvedUrl = buildUrl({
       baseUrl,
       params: validatedParams,
       path: endpoint.path,
@@ -273,60 +355,97 @@ const buildEndpointFn = <E>(
       ...callRestOptions,
     };
 
-    const headers: RequestInit["headers"] = {
+    const mergedHeaders: Record<string, string> = {
       ...authHeader,
-      ...globalHeaders,
-      ...endpointHeaders,
-      ...callHeaders,
+      ...(globalHeaders as Record<string, string>),
+      ...(endpointHeaders as Record<string, string>),
+      ...(callHeaders as Record<string, string>),
       "Content-Type": "application/json",
     };
 
-    // --- Core attempt ---
-    const attempt = (): Promise<Result<unknown, ApiErrors<E>>> =>
-      Result.gen(async function* () {
-        const response = yield* Result.await(
-          safeFetch(url, {
-            method: endpoint.method,
-            headers,
-            body:
-              endpoint.method === "GET"
-                ? undefined
-                : JSON.stringify(validatedInput),
-            ...mergedRestOptions,
-          })
-        );
+    const body =
+      endpoint.method === "GET" ? undefined : JSON.stringify(validatedInput);
 
-        if (endpoint.stream?.enabled) {
-          const stream = yield* Result.await(
-            handleStreamResponse(
-              response,
-              endpoint.output,
-              validateOutput,
-              errorSchema,
-              shouldValidateError
-            )
-          );
-          return Result.ok(stream);
-        }
+    // --- Plugin init (once per invocation, before first attempt) ---
+    const initResult = await runPluginInit(plugins, resolvedUrl, {
+      method: endpoint.method,
+      headers: mergedHeaders,
+      body,
+      ...mergedRestOptions,
+    });
 
-        const outputSchema = endpoint.output ?? z.unknown();
-        const result = yield* Result.await(
-          handleJsonResponse(
-            response,
-            outputSchema,
-            validateOutput,
-            errorSchema,
-            shouldValidateError
+    // Decompose init result back into parts used by attempt()
+    const {
+      headers: initHeaders,
+      body: initBody,
+      method: initMethod,
+      ...initRestOptions
+    } = initResult.options as RequestInit & { body?: string; method: string };
+
+    // The stable context for onSuccess / onError (reflects init output)
+    const stableCtx: RequestContext = {
+      url: initResult.url,
+      method: initMethod ?? endpoint.method,
+      headers: (initHeaders ?? mergedHeaders) as Record<string, string>,
+      body: initBody as string | undefined,
+      ...initRestOptions,
+    };
+
+    // --- Core attempt (runs on each retry) ---
+    const attempt = async (): Promise<Result<unknown, ApiErrors<E>>> => {
+      // onRequest: plugins may mutate ctx per-attempt
+      const ctx = await runOnRequest(plugins, { ...stableCtx });
+
+      const fetchResult = await safeFetch(ctx.url, {
+        method: ctx.method,
+        headers: ctx.headers,
+        body: ctx.body,
+        ...(Object.fromEntries(
+          Object.entries(ctx).filter(
+            (e) => !["url", "method", "headers", "body"].includes(e[0])
           )
-        );
-        return Result.ok(result);
+        ) as RequestInit),
       });
 
-    if (!retry) {
-      return attempt();
-    }
+      if (fetchResult.isErr()) {
+        return Result.err(fetchResult.error);
+      }
 
-    return withRetry(attempt, retry);
+      // onResponse: plugins may replace / clone the Response per-attempt
+      const response = await runOnResponse(plugins, ctx, fetchResult.value);
+
+      if (endpoint.stream?.enabled) {
+        const streamResult = await handleStreamResponse(
+          response,
+          endpoint.output,
+          validateOutput,
+          errorSchema,
+          shouldValidateError
+        );
+        return streamResult as Result<unknown, ApiErrors<E>>;
+      }
+
+      const outputSchema = endpoint.output ?? z.unknown();
+      const jsonResult = await handleJsonResponse(
+        response,
+        outputSchema,
+        validateOutput,
+        errorSchema,
+        shouldValidateError
+      );
+      return jsonResult as Result<unknown, ApiErrors<E>>;
+    };
+
+    // --- Execute (with optional retry), then fire onSuccess / onError ---
+    const finalResult = retry
+      ? await executeWithPluginRetry(attempt, retry, plugins, stableCtx)
+      : await attempt();
+
+    await (finalResult.isOk()
+      ? runOnSuccess(plugins, stableCtx, finalResult.value)
+      : runOnError(plugins, stableCtx, finalResult.error));
+
+    return finalResult;
   };
 };
 
@@ -339,6 +458,7 @@ const buildClientNode = <E>(
   globalRestOptions: Record<string, unknown>,
   validateInput: boolean,
   validateOutput: boolean,
+  plugins: Plugin<E>[],
   errorSchema?: z.ZodType<E>,
   shouldValidateError?: (statusCode: number) => boolean
 ): Record<string, unknown> => {
@@ -354,6 +474,7 @@ const buildClientNode = <E>(
           globalRestOptions,
           validateInput,
           validateOutput,
+          plugins,
           errorSchema,
           shouldValidateError
         )
@@ -365,6 +486,7 @@ const buildClientNode = <E>(
           globalRestOptions,
           validateInput,
           validateOutput,
+          plugins,
           errorSchema,
           shouldValidateError
         );
@@ -405,6 +527,7 @@ export const createApi = <T extends EndpointTree, E = unknown>({
   requestOptions: globalRequestOptions,
   validateOutput = true,
   validateInput = true,
+  plugins = [],
   errorSchema,
   shouldValidateError,
 }: {
@@ -415,6 +538,8 @@ export const createApi = <T extends EndpointTree, E = unknown>({
   requestOptions?: Omit<RequestOptions, "retry">;
   validateOutput?: boolean;
   validateInput?: boolean;
+  /** Plugins to apply to every request. Applied in array order. */
+  plugins?: Plugin<E>[];
   errorSchema?: z.ZodType<E>;
   shouldValidateError?: (statusCode: number) => boolean;
 }): ApiClient<T, E> => {
@@ -430,6 +555,7 @@ export const createApi = <T extends EndpointTree, E = unknown>({
     globalRestOptions,
     validateInput,
     validateOutput,
+    plugins,
     errorSchema,
     shouldValidateError
   ) as ApiClient<T, E>;

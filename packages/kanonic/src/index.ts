@@ -15,6 +15,8 @@ export type {
   EndpointFunction,
   EndpointTree,
   ApiClient,
+  RequestContext,
+  Plugin,
 } from "./types";
 
 export { createApi, createEndpoints, ApiService } from "./core";
