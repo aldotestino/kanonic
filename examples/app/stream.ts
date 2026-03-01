@@ -6,7 +6,7 @@
 //
 // Run: bun run stream.ts
 
-import { createApi } from "kanonic";
+import { createApi } from "@kanonic/fetch";
 
 import { endpoints } from "./endpoints";
 

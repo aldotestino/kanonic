@@ -1,5 +1,5 @@
 {
-  "name": "kanonic",
+  "name": "@kanonic/root",
   "license": "MIT",
   "workspaces": [
     "packages/*",

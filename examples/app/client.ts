@@ -8,7 +8,7 @@
 //
 // Run: bun run client.ts
 
-import { createApi, validateClientErrors } from "kanonic";
+import { createApi, validateClientErrors } from "@kanonic/fetch";
 
 import { apiErrorSchema, endpoints } from "./endpoints";
 

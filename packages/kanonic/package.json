@@ -1,5 +1,5 @@
 {
-  "name": "kanonic",
+  "name": "@kanonic/fetch",
   "type": "module",
   "module": "src/index.ts",
   "exports": {

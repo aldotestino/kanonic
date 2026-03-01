@@ -6,8 +6,8 @@
 //
 // Run: bun run service.ts
 
+import { ApiService, validateClientErrors } from "@kanonic/fetch";
 import { Result } from "better-result";
-import { ApiService, validateClientErrors } from "kanonic";
 
 import { apiErrorSchema, endpoints } from "./endpoints";
 

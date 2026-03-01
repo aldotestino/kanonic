@@ -2,7 +2,7 @@
 // Single source of truth for all schemas and endpoint definitions used across
 // the other example files. All shapes come from JSONPlaceholder and sse.dev.
 
-import { createEndpoints } from "kanonic";
+import { createEndpoints } from "@kanonic/fetch";
 import { z } from "zod";
 
 // ─── Schemas ──────────────────────────────────────────────────────────────────

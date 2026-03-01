@@ -1,5 +1,5 @@
 {
-  "name": "app",
+  "name": "@kanonic/app",
   "private": true,
   "type": "module",
   "module": "endpoints.ts",
@@ -9,8 +9,8 @@
     "stream": "bun run stream.ts"
   },
   "dependencies": {
+    "@kanonic/fetch": "workspace:*",
     "better-result": "^2.7.0",
-    "kanonic": "workspace:*",
     "zod": "^4.3.5"
   },
   "devDependencies": {
