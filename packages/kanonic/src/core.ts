@@ -391,6 +391,9 @@ const buildEndpointFn = <E>(
       ...initRestOptions,
     };
 
+    // Tracks the last response so onSuccess can report status code etc.
+    let lastResponse: Response = new Response();
+
     // --- Core attempt (runs on each retry) ---
     const attempt = async (): Promise<Result<unknown, ApiErrors<E>>> => {
       // onRequest: plugins may mutate ctx per-attempt
@@ -413,6 +416,7 @@ const buildEndpointFn = <E>(
 
       // onResponse: plugins may replace / clone the Response per-attempt
       const response = await runOnResponse(plugins, ctx, fetchResult.value);
+      lastResponse = response;
 
       if (endpoint.stream?.enabled) {
         const streamResult = await handleStreamResponse(
@@ -442,7 +446,7 @@ const buildEndpointFn = <E>(
       : await attempt();
 
     await (finalResult.isOk()
-      ? runOnSuccess(plugins, stableCtx, finalResult.value)
+      ? runOnSuccess(plugins, stableCtx, lastResponse, finalResult.value)
       : runOnError(plugins, stableCtx, finalResult.error));
 
     return finalResult;

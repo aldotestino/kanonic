@@ -28,7 +28,7 @@ export const loggerPlugin: Plugin = {
       );
       return response;
     },
-    async onSuccess(_ctx, data) {
+    async onSuccess(_ctx, _response, data) {
       console.log("[logger] ✓ success:", JSON.stringify(data).slice(0, 120));
     },
     async onError(_ctx, error) {

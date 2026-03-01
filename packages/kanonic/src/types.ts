@@ -262,7 +262,7 @@ export interface RequestContext {
  *   hooks: {
  *     onRequest:  async (ctx) => { console.log("→", ctx.method, ctx.url); return ctx; },
  *     onResponse: async (ctx, res) => { console.log("←", res.status); return res; },
- *     onSuccess:  async (ctx, data) => { console.log("✓", data); },
+ *     onSuccess:  async (ctx, res, data) => { console.log("✓", res.status, data); },
  *     onError:    async (ctx, err) => { console.error("✗", err._tag); },
  *   },
  * };
@@ -305,7 +305,11 @@ export interface Plugin<E = unknown> {
      * Fires **once**, after the entire retry loop resolves successfully.
      * Cannot modify the data. Intended for logging, metrics, tracing, etc.
      */
-    onSuccess?: (ctx: RequestContext, data: unknown) => Promise<void>;
+    onSuccess?: (
+      ctx: RequestContext,
+      response: Response,
+      data: unknown
+    ) => Promise<void>;
     /**
      * Fires **once**, after the entire retry loop resolves with an error.
      * Cannot modify the error. Intended for logging, metrics, tracing, etc.

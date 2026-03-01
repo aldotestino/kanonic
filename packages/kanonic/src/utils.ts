@@ -284,12 +284,13 @@ export const runOnResponse = async <E>(
 export const runOnSuccess = async <E>(
   plugins: Plugin<E>[],
   ctx: RequestContext,
+  response: Response,
   data: unknown
 ): Promise<void> => {
   for (const plugin of plugins) {
     if (plugin.hooks?.onSuccess) {
       try {
-        await plugin.hooks.onSuccess(ctx, data);
+        await plugin.hooks.onSuccess(ctx, response, data);
       } catch {
         // swallow — fire-and-forget
       }

@@ -2398,7 +2398,7 @@ describe("Plugin System", () => {
           name: "Spy",
           version: "1.0.0",
           hooks: {
-            async onSuccess(_ctx, data) {
+            async onSuccess(_ctx, _response, data) {
               capturedData = data;
             },
           },
