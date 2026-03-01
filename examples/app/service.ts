@@ -24,12 +24,12 @@ class BlogService extends ApiService(endpoints, apiErrorSchema) {
     const { api } = this; // destructure: generator callbacks aren't arrow fns
 
     return Result.gen(async function* () {
-      const post = yield* Result.await(api.getPost({ params: { id } }));
+      const post = yield* Result.await(api.posts.get({ params: { id } }));
       const comments = yield* Result.await(
-        api.getComments({ params: { postId: post.id } })
+        api.posts.comments({ params: { postId: post.id } })
       );
       const author = yield* Result.await(
-        api.getUser({ params: { id: post.userId } })
+        api.users.get({ params: { id: post.userId } })
       );
 
       return Result.ok({ author, comments, post });
@@ -41,8 +41,10 @@ class BlogService extends ApiService(endpoints, apiErrorSchema) {
     const { api } = this;
 
     return Result.gen(async function* () {
-      const user = yield* Result.await(api.getUser({ params: { id: userId } }));
-      const todos = yield* Result.await(api.getTodos());
+      const user = yield* Result.await(
+        api.users.get({ params: { id: userId } })
+      );
+      const todos = yield* Result.await(api.todos.list());
 
       const pending = todos.filter((t) => t.userId === user.id && !t.completed);
 

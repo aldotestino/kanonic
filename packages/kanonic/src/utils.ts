@@ -2,7 +2,20 @@ import { Result } from "better-result";
 import type { z } from "zod";
 
 import { ApiError, FetchError, ParseError } from "./errors";
-import type { ApiErrors, Auth, RetryOptions } from "./types";
+import type {
+  ApiErrors,
+  Auth,
+  Endpoint,
+  EndpointTree,
+  RetryOptions,
+} from "./types";
+
+/**
+ * Runtime guard: an Endpoint always has a `method` string property.
+ * A nested EndpointTree group never does.
+ */
+export const isEndpoint = (value: Endpoint | EndpointTree): value is Endpoint =>
+  typeof (value as Endpoint).method === "string";
 
 export const buildUrl = ({
   baseUrl,

@@ -13,6 +13,7 @@ export type {
   RequestOptions,
   ApiErrors,
   EndpointFunction,
+  EndpointTree,
   ApiClient,
 } from "./types";
 

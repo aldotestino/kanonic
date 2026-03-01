@@ -31,7 +31,7 @@ const api = createApi({
 
 console.log("1. Fetching todo #1\n");
 
-const todo = await api.getTodo({ params: { id: 1 } });
+const todo = await api.todos.get({ params: { id: 1 } });
 
 todo.match({
   err: (e) => console.error("  ✗", e.message, "\n"),
@@ -42,7 +42,7 @@ todo.match({
 
 console.log("2. Fetching a non-existent user (expects 404)\n");
 
-const user = await api.getUser({ params: { id: 99_999 } });
+const user = await api.users.get({ params: { id: 99_999 } });
 
 if (user.isErr()) {
   const { error } = user;
@@ -86,7 +86,7 @@ console.log(
   "3. Creating a todo with an empty title (expects InputValidationError)\n"
 );
 
-const created = await api.createTodo({ input: { title: "", userId: 1 } });
+const created = await api.todos.create({ input: { title: "", userId: 1 } });
 
 if (created.isErr() && created.error._tag === "InputValidationError") {
   console.log("  ✓ Caught before fetch:");
@@ -100,7 +100,7 @@ if (created.isErr() && created.error._tag === "InputValidationError") {
 
 console.log("4. Fetch all todos and extract only the completed ones\n");
 
-const todos = await api.getTodos();
+const todos = await api.todos.list();
 
 const completedTitles = todos.map((all) =>
   all.filter((t) => t.completed).map((t) => t.title)
@@ -117,7 +117,7 @@ console.log("5. Fetch todo #1 with an AbortController (not aborted)\n");
 
 const ac = new AbortController();
 
-const abortable = await api.getTodo(
+const abortable = await api.todos.get(
   { params: { id: 1 } },
   { headers: { "X-Request-Id": "demo-123" }, signal: ac.signal }
 );
@@ -135,7 +135,7 @@ console.log(
 
 // Retry is opt-in per call. Validation errors are never retried.
 // shouldRetry receives either a FetchError or ApiError<E> — never a validation error.
-const retried = await api.getTodo(
+const retried = await api.todos.get(
   { params: { id: 1 } },
   {
     retry: {
