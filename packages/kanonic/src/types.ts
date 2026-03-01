@@ -228,3 +228,96 @@ export type Auth =
       username: string;
       password: string;
     };
+
+/**
+ * The request context passed to plugin hooks. Contains everything that will
+ * be forwarded to `fetch` after all option merging has been applied.
+ *
+ * Hooks receive this object by reference and may mutate it; each plugin in the
+ * chain sees the version produced by the previous plugin.
+ */
+export interface RequestContext {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body: string | undefined;
+  /** Any additional RequestInit fields (signal, credentials, mode, …). */
+  [key: string]: unknown;
+}
+
+/**
+ * A plugin that hooks into the kanonic request lifecycle.
+ *
+ * Plugins are registered globally via `createApi({ plugins: [...] })` and
+ * apply to every endpoint. They are applied in array order — each hook
+ * receives the context as mutated by all previous plugins in the chain.
+ *
+ * @example
+ * ```ts
+ * // Logger plugin (side-effects only)
+ * const logger: Plugin = {
+ *   id: "logger",
+ *   name: "Logger",
+ *   version: "1.0.0",
+ *   hooks: {
+ *     onRequest:  async (ctx) => { console.log("→", ctx.method, ctx.url); return ctx; },
+ *     onResponse: async (ctx, res) => { console.log("←", res.status); return res; },
+ *     onSuccess:  async (ctx, data) => { console.log("✓", data); },
+ *     onError:    async (ctx, err) => { console.error("✗", err._tag); },
+ *   },
+ * };
+ * ```
+ */
+export interface Plugin<E = unknown> {
+  /** Unique identifier for this plugin instance. */
+  id: string;
+  /** Human-readable display name. */
+  name: string;
+  /** Semver string, e.g. `"1.0.0"`. */
+  version: string;
+  /**
+   * Called once per endpoint invocation, **before** the first attempt.
+   * Receives the fully-resolved URL and the merged `RequestInit` options.
+   * May return a modified `{ url, options }` — useful for adding trace IDs,
+   * signing requests, or rewriting URLs.
+   *
+   * Runs even when `retry` is configured; it is NOT re-run on each retry.
+   */
+  init?: (
+    url: string,
+    options: RequestInit
+  ) => Promise<{ url: string; options: RequestInit }>;
+  hooks?: {
+    /**
+     * Fires at the start of **each attempt** (including retries), after `init`.
+     * Receives the current `RequestContext` and must return it (optionally
+     * mutated). Mutations are visible to all subsequent plugins and to `fetch`.
+     */
+    onRequest?: (ctx: RequestContext) => Promise<RequestContext>;
+    /**
+     * Fires after every `fetch` response, on **each attempt**.
+     * Receives the `RequestContext` (as produced by `onRequest`) and the raw
+     * `Response`. Must return a `Response` — can be the same object or a
+     * cloned/replaced one.
+     */
+    onResponse?: (ctx: RequestContext, response: Response) => Promise<Response>;
+    /**
+     * Fires **once**, after the entire retry loop resolves successfully.
+     * Cannot modify the data. Intended for logging, metrics, tracing, etc.
+     */
+    onSuccess?: (ctx: RequestContext, data: unknown) => Promise<void>;
+    /**
+     * Fires **once**, after the entire retry loop resolves with an error.
+     * Cannot modify the error. Intended for logging, metrics, tracing, etc.
+     */
+    onError?: (ctx: RequestContext, error: ApiErrors<E>) => Promise<void>;
+    /**
+     * Fires inside the retry loop, just before the sleep delay, when an
+     * attempt fails and will be retried. Cannot modify anything.
+     */
+    onRetry?: (
+      ctx: RequestContext,
+      error: FetchError | ApiError<E>
+    ) => Promise<void>;
+  };
+}

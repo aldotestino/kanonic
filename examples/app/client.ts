@@ -5,12 +5,14 @@
 //   - input validation catching bad data before any network call
 //   - requestOptions at global, endpoint, and per-call level
 //   - per-call retry with backoff and shouldRetry predicate
+//   - plugins (logger + timing)
 //
 // Run: bun run client.ts
 
 import { createApi, validateClientErrors } from "@kanonic/fetch";
 
 import { apiErrorSchema, endpoints } from "./endpoints";
+import { loggerPlugin, timingPlugin } from "./plugins";
 
 const api = createApi({
   baseUrl: "https://jsonplaceholder.typicode.com",
@@ -19,6 +21,8 @@ const api = createApi({
   // error.data will be typed as { code, message, details? } when parsing succeeds.
   errorSchema: apiErrorSchema,
   shouldValidateError: validateClientErrors,
+  // Plugins applied to every request in order.
+  plugins: [loggerPlugin, timingPlugin],
   // Global fetch options applied to every request.
   // Headers here are the lowest priority and can be overridden per-endpoint or per-call.
   requestOptions: {
