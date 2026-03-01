@@ -8,34 +8,28 @@ import { z } from "zod";
 // ─── Schemas ──────────────────────────────────────────────────────────────────
 
 export const postSchema = z.object({
-  id: z.number(),
-  userId: z.number(),
-  title: z.string(),
   body: z.string(),
+  id: z.number(),
+  title: z.string(),
+  userId: z.number(),
 });
 
 export const commentSchema = z.object({
-  id: z.number(),
-  postId: z.number(),
-  name: z.string(),
-  email: z.string(),
   body: z.string(),
+  email: z.string(),
+  id: z.number(),
+  name: z.string(),
+  postId: z.number(),
 });
 
 export const todoSchema = z.object({
-  id: z.number(),
-  userId: z.number(),
-  title: z.string(),
   completed: z.boolean(),
+  id: z.number(),
+  title: z.string(),
+  userId: z.number(),
 });
 
 export const userSchema = z.object({
-  id: z.number(),
-  name: z.string(),
-  username: z.string(),
-  email: z.string(),
-  phone: z.string(),
-  website: z.string(),
   address: z.object({
     street: z.string(),
     suite: z.string(),
@@ -48,13 +42,19 @@ export const userSchema = z.object({
     catchPhrase: z.string(),
     bs: z.string(),
   }),
+  email: z.string(),
+  id: z.number(),
+  name: z.string(),
+  phone: z.string(),
+  username: z.string(),
+  website: z.string(),
 });
 
 // Optional: schema for structured error bodies returned by the API
 export const apiErrorSchema = z.object({
   code: z.string(),
-  message: z.string(),
   details: z.record(z.string(), z.unknown()).optional(),
+  message: z.string(),
 });
 
 // ─── Endpoints ────────────────────────────────────────────────────────────────
@@ -63,53 +63,53 @@ export const endpoints = createEndpoints({
   // Todos
   getTodos: {
     method: "GET",
-    path: "/todos",
     output: z.array(todoSchema),
+    path: "/todos",
   },
   getTodo: {
     method: "GET",
-    path: "/todos/:id",
-    params: z.object({ id: z.number() }),
     output: todoSchema,
+    params: z.object({ id: z.number() }),
+    path: "/todos/:id",
   },
   createTodo: {
-    method: "POST",
-    path: "/todos",
     input: z.object({ title: z.string().min(1), userId: z.number() }),
+    method: "POST",
     output: todoSchema,
+    path: "/todos",
   },
   updateTodo: {
-    method: "PATCH",
-    path: "/todos/:id",
-    params: z.object({ id: z.number() }),
     input: z.object({ completed: z.boolean() }),
+    method: "PATCH",
     output: todoSchema,
+    params: z.object({ id: z.number() }),
+    path: "/todos/:id",
   },
 
   // Posts & comments
   getPosts: {
     method: "GET",
-    path: "/posts",
     output: z.array(postSchema),
+    path: "/posts",
   },
   getPost: {
     method: "GET",
-    path: "/posts/:id",
-    params: z.object({ id: z.number() }),
     output: postSchema,
+    params: z.object({ id: z.number() }),
+    path: "/posts/:id",
   },
   getComments: {
     method: "GET",
-    path: "/posts/:postId/comments",
-    params: z.object({ postId: z.number() }),
     output: z.array(commentSchema),
+    params: z.object({ postId: z.number() }),
+    path: "/posts/:postId/comments",
   },
 
   // Users
   getUsers: {
     method: "GET",
-    path: "/users",
     output: z.array(userSchema),
+    path: "/users",
   },
   getUser: {
     method: "GET",
@@ -126,14 +126,14 @@ export const endpoints = createEndpoints({
   // SSE stream
   stream: {
     method: "GET",
-    path: "/test",
-    query: z.object({ interval: z.number().int() }),
     output: z.object({
       msg: z.string(),
       now: z.number(),
       sse_dev: z.string(),
       testing: z.boolean(),
     }),
+    path: "/test",
+    query: z.object({ interval: z.number().int() }),
     stream: { enabled: true },
   },
 });

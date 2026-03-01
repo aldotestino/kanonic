@@ -8,8 +8,8 @@ A lightweight, type-safe HTTP client generator for TypeScript. Define your API c
 const result = await api.getTodo({ params: { id: 1 } });
 
 result.match({
-  ok: (todo) => console.log(todo.title),  // todo is fully typed
-  err: (error) => console.error(error),   // error is a discriminated union
+  ok: (todo) => console.log(todo.title), // todo is fully typed
+  err: (error) => console.error(error), // error is a discriminated union
 });
 ```
 
@@ -118,12 +118,14 @@ if (result.isOk()) {
 }
 
 // Or use .match() for exhaustive handling
-await api.createTodo({ input: { title: "Buy milk", userId: 1 } }).then((result) =>
-  result.match({
-    ok: (todo) => console.log("Created:", todo.id),
-    err: (error) => console.error("Failed:", error.message),
-  })
-);
+await api
+  .createTodo({ input: { title: "Buy milk", userId: 1 } })
+  .then((result) =>
+    result.match({
+      ok: (todo) => console.log("Created:", todo.id),
+      err: (error) => console.error("Failed:", error.message),
+    })
+  );
 ```
 
 ## Core Concepts
@@ -148,7 +150,12 @@ if (result.isOk()) {
 
 // Pattern 3: map/mapError — transform without unwrapping
 const uppercased = result.map((todo) => todo.title.toUpperCase());
-const withFallback = result.unwrapOr({ id: 0, title: "fallback", completed: false, userId: 0 });
+const withFallback = result.unwrapOr({
+  id: 0,
+  title: "fallback",
+  completed: false,
+  userId: 0,
+});
 ```
 
 ### Composing multiple calls
@@ -161,15 +168,20 @@ import { Result } from "better-result";
 const result = await Result.gen(async function* () {
   // Each yield* either returns the value or short-circuits with the error
   const user = yield* Result.await(api.getUser({ params: { id: 1 } }));
-  const posts = yield* Result.await(api.getUserPosts({ params: { userId: user.id } }));
-  const comments = yield* Result.await(api.getComments({ params: { postId: posts[0].id } }));
+  const posts = yield* Result.await(
+    api.getUserPosts({ params: { userId: user.id } })
+  );
+  const comments = yield* Result.await(
+    api.getComments({ params: { postId: posts[0].id } })
+  );
 
   return Result.ok({ user, posts, comments });
 });
 
 // result is Result<{ user, posts, comments }, ApiErrors>
 result.match({
-  ok: ({ user, posts, comments }) => console.log(user.name, posts.length, comments.length),
+  ok: ({ user, posts, comments }) =>
+    console.log(user.name, posts.length, comments.length),
   err: (error) => console.error("One of the calls failed:", error._tag),
 });
 ```
@@ -242,7 +254,7 @@ if (result.isErr() && result.error._tag === "ApiError") {
 
   if (error.data) {
     // Typed: { code: string; message: string; details?: Record<string, unknown> }
-    console.error(error.data.code);    // "NOT_FOUND"
+    console.error(error.data.code); // "NOT_FOUND"
     console.error(error.data.message); // "User not found"
   } else {
     // Parsing or validation failed — fall back to raw text
@@ -253,12 +265,12 @@ if (result.isErr() && result.error._tag === "ApiError") {
 
 **Validation strategies** for `shouldValidateError`:
 
-| Strategy | Behavior |
-|---|---|
-| *(not set)* | No error body parsing, `error.data` is always `undefined` |
-| `validateClientErrors` | Parse 4xx responses only |
-| `validateAllErrors` | Parse all error responses (4xx and 5xx) |
-| `(statusCode) => boolean` | Custom predicate for full control |
+| Strategy                  | Behavior                                                  |
+| ------------------------- | --------------------------------------------------------- |
+| _(not set)_               | No error body parsing, `error.data` is always `undefined` |
+| `validateClientErrors`    | Parse 4xx responses only                                  |
+| `validateAllErrors`       | Parse all error responses (4xx and 5xx)                   |
+| `(statusCode) => boolean` | Custom predicate for full control                         |
 
 **Graceful fallback:** if JSON parsing or Zod validation fails on an error body, `error.data` is `undefined` and `error.text` always contains the raw response body. The client never throws.
 
@@ -287,7 +299,7 @@ const endpoints = createEndpoints({
 
 ```ts
 // /users/:id → /users/42
-params: z.object({ id: z.number() })
+params: z.object({ id: z.number() });
 ```
 
 **Query params** (`query` schema) — appended to the URL as a query string after validation. Arrays become repeated keys (`?tag=a&tag=b`). `null`/`undefined` values are omitted.
@@ -297,7 +309,7 @@ query: z.object({
   page: z.number().optional(),
   limit: z.number().optional(),
   tags: z.array(z.string()).optional(),
-})
+});
 ```
 
 **Response output** (`output` schema) — the parsed JSON response is validated against the schema. Failure returns `OutputValidationError`. Set `validateOutput: false` to skip this step.
@@ -379,7 +391,7 @@ const ac = new AbortController();
 
 const result = await api.getUser(
   { params: { id: 1 } },
-  { signal: ac.signal, headers: { "X-Request-Id": "abc123" } },
+  { signal: ac.signal, headers: { "X-Request-Id": "abc123" } }
 );
 ```
 
@@ -399,31 +411,32 @@ const result = await api.getUser(
   { params: { id: 1 } },
   {
     retry: {
-      times: 3,           // retries after the first attempt; total calls = times + 1
-      delayMs: 200,       // base delay in milliseconds
+      times: 3, // retries after the first attempt; total calls = times + 1
+      delayMs: 200, // base delay in milliseconds
       backoff: "exponential", // delay schedule (see table below)
       // Optional predicate — return true to retry, false to stop.
       // Only receives retriable errors: FetchError or ApiError<E>.
       // Validation errors (InputValidationError, OutputValidationError, ParseError)
       // are never retried regardless of this predicate.
       shouldRetry: (error) => {
-        if (error._tag === "FetchError") return true;   // always retry network errors
-        return error.statusCode >= 500;                 // only retry 5xx, not 4xx
+        if (error._tag === "FetchError") return true; // always retry network errors
+        return error.statusCode >= 500; // only retry 5xx, not 4xx
       },
     },
-  },
+  }
 );
 ```
 
 **Backoff strategies** (`d = delayMs`, attempt is 0-indexed from the first retry):
 
-| `backoff` | Formula | Example (`delayMs: 100`) |
-|---|---|---|
-| `"constant"` | `d` | 100ms, 100ms, 100ms |
-| `"linear"` | `d × (attempt + 1)` | 100ms, 200ms, 300ms |
-| `"exponential"` | `d × 2^attempt` | 100ms, 200ms, 400ms |
+| `backoff`       | Formula             | Example (`delayMs: 100`) |
+| --------------- | ------------------- | ------------------------ |
+| `"constant"`    | `d`                 | 100ms, 100ms, 100ms      |
+| `"linear"`      | `d × (attempt + 1)` | 100ms, 200ms, 300ms      |
+| `"exponential"` | `d × 2^attempt`     | 100ms, 200ms, 400ms      |
 
 **Key behaviours:**
+
 - `shouldRetry` defaults to always retry if omitted
 - The initial attempt is not counted — `times: 3` means up to 3 retries (4 total calls)
 - Validation errors (`InputValidationError`, `OutputValidationError`, `ParseError`) are **never** retried
@@ -434,6 +447,7 @@ const result = await api.getUser(
 `ApiService` is a class factory for the service-oriented pattern. You bake in the endpoint definitions (and optionally an error schema) at class definition time, then instantiate the service with runtime configuration like `baseUrl` and `auth`.
 
 This pattern is useful when you want to:
+
 - Encapsulate related endpoints behind a service interface
 - Add domain-specific methods that compose multiple API calls
 - Share the client between methods without passing it around
@@ -443,14 +457,41 @@ import { ApiService, validateClientErrors } from "kanonic";
 import { Result } from "better-result";
 import { z } from "zod";
 
-const postSchema = z.object({ id: z.number(), title: z.string(), userId: z.number() });
-const commentSchema = z.object({ id: z.number(), postId: z.number(), body: z.string() });
-const userSchema = z.object({ id: z.number(), name: z.string(), email: z.string() });
+const postSchema = z.object({
+  id: z.number(),
+  title: z.string(),
+  userId: z.number(),
+});
+const commentSchema = z.object({
+  id: z.number(),
+  postId: z.number(),
+  body: z.string(),
+});
+const userSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  email: z.string(),
+});
 
 const endpoints = createEndpoints({
-  getPost:     { method: "GET", path: "/posts/:id",          params: z.object({ id: z.number() }),     output: postSchema },
-  getComments: { method: "GET", path: "/posts/:postId/comments", params: z.object({ postId: z.number() }), output: z.array(commentSchema) },
-  getUser:     { method: "GET", path: "/users/:id",          params: z.object({ id: z.number() }),     output: userSchema },
+  getPost: {
+    method: "GET",
+    path: "/posts/:id",
+    params: z.object({ id: z.number() }),
+    output: postSchema,
+  },
+  getComments: {
+    method: "GET",
+    path: "/posts/:postId/comments",
+    params: z.object({ postId: z.number() }),
+    output: z.array(commentSchema),
+  },
+  getUser: {
+    method: "GET",
+    path: "/users/:id",
+    params: z.object({ id: z.number() }),
+    output: userSchema,
+  },
 });
 
 const errorSchema = z.object({ message: z.string() });
@@ -465,9 +506,13 @@ class BlogService extends ApiService(endpoints, errorSchema) {
     const { api } = this; // destructure to preserve `this` inside the generator
 
     return Result.gen(async function* () {
-      const post     = yield* Result.await(api.getPost({ params: { id } }));
-      const comments = yield* Result.await(api.getComments({ params: { postId: post.id } }));
-      const author   = yield* Result.await(api.getUser({ params: { id: post.userId } }));
+      const post = yield* Result.await(api.getPost({ params: { id } }));
+      const comments = yield* Result.await(
+        api.getComments({ params: { postId: post.id } })
+      );
+      const author = yield* Result.await(
+        api.getUser({ params: { id: post.userId } })
+      );
 
       return Result.ok({ post, comments, author });
     });
@@ -480,7 +525,9 @@ const result = await blog.getEnrichedPost(1);
 
 result.match({
   ok: ({ post, comments, author }) => {
-    console.log(`"${post.title}" by ${author.name} — ${comments.length} comments`);
+    console.log(
+      `"${post.title}" by ${author.name} — ${comments.length} comments`
+    );
   },
   err: (error) => console.error(error._tag, error.message),
 });
@@ -509,7 +556,8 @@ const api = createApi({ baseUrl: "https://api.example.com", endpoints });
 const result = await api.streamUpdates();
 
 if (result.isOk()) {
-  for await (const line of result.value) { // ReadableStream<string>
+  for await (const line of result.value) {
+    // ReadableStream<string>
     console.log(line);
   }
 }
@@ -557,13 +605,13 @@ if (result.isOk()) {
 
 All errors extend `Error` and are safe to `throw`, serialize with `toJSON()`, and discriminate with `instanceof` or `._tag`.
 
-| Class | `_tag` | When | Key fields |
-|---|---|---|---|
-| `ApiError<T>` | `"ApiError"` | Server returned status >= 400 | `statusCode: number`, `text: string`, `data?: T` |
-| `FetchError` | `"FetchError"` | `fetch()` threw (network down, bad URL, etc.) | `message: string`, `cause?: unknown` |
-| `ParseError` | `"ParseError"` | Response body could not be read or parsed | `message: string`, `cause?: unknown` |
-| `InputValidationError` | `"InputValidationError"` | Request data failed Zod validation | `message: string`, `zodError: z.ZodError` |
-| `OutputValidationError` | `"OutputValidationError"` | Response data failed Zod validation | `message: string`, `zodError: z.ZodError` |
+| Class                   | `_tag`                    | When                                          | Key fields                                       |
+| ----------------------- | ------------------------- | --------------------------------------------- | ------------------------------------------------ |
+| `ApiError<T>`           | `"ApiError"`              | Server returned status >= 400                 | `statusCode: number`, `text: string`, `data?: T` |
+| `FetchError`            | `"FetchError"`            | `fetch()` threw (network down, bad URL, etc.) | `message: string`, `cause?: unknown`             |
+| `ParseError`            | `"ParseError"`            | Response body could not be read or parsed     | `message: string`, `cause?: unknown`             |
+| `InputValidationError`  | `"InputValidationError"`  | Request data failed Zod validation            | `message: string`, `zodError: z.ZodError`        |
+| `OutputValidationError` | `"OutputValidationError"` | Response data failed Zod validation           | `message: string`, `zodError: z.ZodError`        |
 
 All errors have a `_tag` discriminant. `ApiError<T>` carries a generic that types `error.data` when an `errorSchema` is used.
 
@@ -610,8 +658,8 @@ type RequestOptions<E = unknown> = Omit<RequestInit, "body" | "method"> & {
 
 ```ts
 type RetryOptions<E = unknown> = {
-  times: number;                                          // Number of retries (not counting initial)
-  delayMs: number;                                        // Base delay in milliseconds
+  times: number; // Number of retries (not counting initial)
+  delayMs: number; // Base delay in milliseconds
   backoff: "constant" | "linear" | "exponential";
   shouldRetry?: (error: FetchError | ApiError<E>) => boolean; // Defaults to always retry
 };

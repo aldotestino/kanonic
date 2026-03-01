@@ -6,8 +6,9 @@
 //
 // Run: bun run service.ts
 
-import { ApiService, validateClientErrors } from "kanonic";
 import { Result } from "better-result";
+import { ApiService, validateClientErrors } from "kanonic";
+
 import { apiErrorSchema, endpoints } from "./endpoints";
 
 // ─── Service definition ───────────────────────────────────────────────────────
@@ -25,13 +26,13 @@ class BlogService extends ApiService(endpoints, apiErrorSchema) {
     return Result.gen(async function* () {
       const post = yield* Result.await(api.getPost({ params: { id } }));
       const comments = yield* Result.await(
-        api.getComments({ params: { postId: post.id } }),
+        api.getComments({ params: { postId: post.id } })
       );
       const author = yield* Result.await(
-        api.getUser({ params: { id: post.userId } }),
+        api.getUser({ params: { id: post.userId } })
       );
 
-      return Result.ok({ post, comments, author });
+      return Result.ok({ author, comments, post });
     });
   }
 
@@ -43,11 +44,9 @@ class BlogService extends ApiService(endpoints, apiErrorSchema) {
       const user = yield* Result.await(api.getUser({ params: { id: userId } }));
       const todos = yield* Result.await(api.getTodos());
 
-      const pending = todos.filter(
-        (t) => t.userId === user.id && !t.completed,
-      );
+      const pending = todos.filter((t) => t.userId === user.id && !t.completed);
 
-      return Result.ok({ user, pending });
+      return Result.ok({ pending, user });
     });
   }
 }
@@ -61,12 +60,12 @@ console.log("1. Fetching enriched post #1\n");
 const enriched = await blog.getEnrichedPost(1);
 
 enriched.match({
+  err: (error) => console.error("  ✗", error._tag, error.message, "\n"),
   ok: ({ post, comments, author }) => {
     console.log(`  "${post.title}"`);
     console.log(`  by ${author.name} <${author.email}>`);
     console.log(`  ${comments.length} comments\n`);
   },
-  err: (error) => console.error("  ✗", error._tag, error.message, "\n"),
 });
 
 console.log("2. Fetching pending todos for user #1\n");
@@ -74,13 +73,15 @@ console.log("2. Fetching pending todos for user #1\n");
 const pending = await blog.getPendingTodos(1);
 
 pending.match({
+  err: (error) => console.error("  ✗", error._tag, error.message, "\n"),
   ok: ({ user, pending: todos }) => {
     console.log(`  ${user.name} has ${todos.length} pending todos:`);
     for (const todo of todos.slice(0, 3)) {
       console.log(`    [ ] ${todo.title}`);
     }
-    if (todos.length > 3) console.log(`    ... and ${todos.length - 3} more`);
+    if (todos.length > 3) {
+      console.log(`    ... and ${todos.length - 3} more`);
+    }
     console.log();
   },
-  err: (error) => console.error("  ✗", error._tag, error.message, "\n"),
 });

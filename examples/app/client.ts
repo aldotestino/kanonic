@@ -9,6 +9,7 @@
 // Run: bun run client.ts
 
 import { createApi, validateClientErrors } from "kanonic";
+
 import { apiErrorSchema, endpoints } from "./endpoints";
 
 const api = createApi({
@@ -21,8 +22,8 @@ const api = createApi({
   // Global fetch options applied to every request.
   // Headers here are the lowest priority and can be overridden per-endpoint or per-call.
   requestOptions: {
-    headers: { "X-Client": "kanonic-example" },
     cache: "no-store",
+    headers: { "X-Client": "kanonic-example" },
   },
 });
 
@@ -33,8 +34,8 @@ console.log("1. Fetching todo #1\n");
 const todo = await api.getTodo({ params: { id: 1 } });
 
 todo.match({
-  ok: (t) => console.log(`  ✓ [${t.completed ? "x" : " "}] ${t.title}\n`),
   err: (e) => console.error("  ✗", e.message, "\n"),
+  ok: (t) => console.log(`  ✓ [${t.completed ? "x" : " "}] ${t.title}\n`),
 });
 
 // ─── 2. Typed error response ──────────────────────────────────────────────────
@@ -47,43 +48,50 @@ if (user.isErr()) {
   const { error } = user;
 
   switch (error._tag) {
-    case "ApiError":
+    case "ApiError": {
       console.log("  HTTP", error.statusCode);
       if (error.data) {
         // Typed: { code: string; message: string; details?: ... }
-        console.log("  code:   ", error.data.code);
+        console.log("code:", error.data.code);
         console.log("  message:", error.data.message);
       } else {
         // JSONPlaceholder doesn't return structured errors, so we fall back
         console.log("  raw body:", error.text || "(empty)");
       }
       break;
-    case "FetchError":
+    }
+    case "FetchError": {
       console.log("  Network failure:", error.message);
       break;
-    case "InputValidationError":
+    }
+    case "InputValidationError": {
       console.log("  Invalid input:", error.zodError.issues);
       break;
-    case "OutputValidationError":
+    }
+    case "OutputValidationError": {
       console.log("  Unexpected response shape:", error.zodError.issues);
       break;
-    case "ParseError":
+    }
+    default: {
       console.log("  Could not parse response:", error.message);
       break;
+    }
   }
   console.log();
 }
 
 // ─── 3. Input validation (caught before the network call) ─────────────────────
 
-console.log("3. Creating a todo with an empty title (expects InputValidationError)\n");
+console.log(
+  "3. Creating a todo with an empty title (expects InputValidationError)\n"
+);
 
 const created = await api.createTodo({ input: { title: "", userId: 1 } });
 
 if (created.isErr() && created.error._tag === "InputValidationError") {
   console.log("  ✓ Caught before fetch:");
   for (const issue of created.error.zodError.issues) {
-    console.log("   ", issue.path.join("."), "—", issue.message);
+    console.log("", issue.path.join("."), "—", issue.message);
   }
   console.log();
 }
@@ -95,12 +103,12 @@ console.log("4. Fetch all todos and extract only the completed ones\n");
 const todos = await api.getTodos();
 
 const completedTitles = todos.map((all) =>
-  all.filter((t) => t.completed).map((t) => t.title),
+  all.filter((t) => t.completed).map((t) => t.title)
 );
 
 completedTitles.match({
-  ok: (titles) => console.log(`  ✓ ${titles.length} completed todos\n`),
   err: (e) => console.error("  ✗", e.message, "\n"),
+  ok: (titles) => console.log(`  ✓ ${titles.length} completed todos\n`),
 });
 
 // ─── 5. Per-call requestOptions ───────────────────────────────────────────────
@@ -111,17 +119,19 @@ const ac = new AbortController();
 
 const abortable = await api.getTodo(
   { params: { id: 1 } },
-  { signal: ac.signal, headers: { "X-Request-Id": "demo-123" } },
+  { headers: { "X-Request-Id": "demo-123" }, signal: ac.signal }
 );
 
 abortable.match({
-  ok: (t) => console.log(`  ✓ ${t.title}\n`),
   err: (e) => console.error("  ✗", e._tag, "\n"),
+  ok: (t) => console.log(`  ✓ ${t.title}\n`),
 });
 
 // ─── 6. Retry with exponential backoff ────────────────────────────────────────
 
-console.log("6. Fetch todo #1 with retry (up to 3 retries, exponential backoff)\n");
+console.log(
+  "6. Fetch todo #1 with retry (up to 3 retries, exponential backoff)\n"
+);
 
 // Retry is opt-in per call. Validation errors are never retried.
 // shouldRetry receives either a FetchError or ApiError<E> — never a validation error.
@@ -129,19 +139,21 @@ const retried = await api.getTodo(
   { params: { id: 1 } },
   {
     retry: {
-      times: 3,           // up to 3 retries (4 total calls if all fail)
-      delayMs: 200,       // base delay in ms
+      times: 3, // up to 3 retries (4 total calls if all fail)
+      delayMs: 200, // base delay in ms
       backoff: "exponential", // 200ms, 400ms, 800ms
       // Only retry on network failures or 5xx server errors — stop on 4xx
       shouldRetry: (error) => {
-        if (error._tag === "FetchError") return true;
+        if (error._tag === "FetchError") {
+          return true;
+        }
         return error.statusCode >= 500;
       },
     },
-  },
+  }
 );
 
 retried.match({
-  ok: (t) => console.log(`  ✓ [${t.completed ? "x" : " "}] ${t.title}\n`),
   err: (e) => console.error("  ✗", e._tag, "\n"),
+  ok: (t) => console.log(`  ✓ [${t.completed ? "x" : " "}] ${t.title}\n`),
 });

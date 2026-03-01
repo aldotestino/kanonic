@@ -1,6 +1,5 @@
-import type { z } from "zod";
-
 import { TaggedError } from "better-result";
+import type { z } from "zod";
 
 /**
  * API error returned when response status code >= 400.

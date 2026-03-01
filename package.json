@@ -1,15 +1,24 @@
 {
   "name": "kanonic",
-  "devDependencies": {
-    "@types/bun": "latest"
-  },
-  "peerDependencies": {
-    "typescript": "^5"
-  },
-  "type": "module",
+  "license": "MIT",
   "workspaces": [
     "packages/*",
     "examples/*"
   ],
-  "license": "MIT"
+  "type": "module",
+  "scripts": {
+    "check": "ultracite check",
+    "fix": "ultracite fix",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "husky": "^9.1.7",
+    "oxfmt": "^0.35.0",
+    "oxlint": "^1.50.0",
+    "ultracite": "7.2.4"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
 }

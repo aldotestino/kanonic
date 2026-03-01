@@ -7,6 +7,7 @@
 // Run: bun run stream.ts
 
 import { createApi } from "kanonic";
+
 import { endpoints } from "./endpoints";
 
 const api = createApi({
@@ -21,14 +22,17 @@ const result = await api.stream({ query: { interval: 1 } });
 if (result.isErr()) {
   const { error } = result;
   switch (error._tag) {
-    case "ApiError":
+    case "ApiError": {
       console.error(`HTTP ${error.statusCode}:`, error.text);
       break;
-    case "FetchError":
+    }
+    case "FetchError": {
       console.error("Network error:", error.message);
       break;
-    default:
+    }
+    default: {
       console.error(error._tag, error.message);
+    }
   }
   process.exit(1);
 }
@@ -39,7 +43,10 @@ for await (const chunk of result.value) {
   // chunk is typed: { msg: string; now: number; sse_dev: string; testing: boolean }
   const ts = new Date(chunk.now * 1000).toISOString();
   console.log(`[${ts}] ${chunk.msg}`);
-  if (++count >= 5) break;
+  count += 1;
+  if (count >= 5) {
+    break;
+  }
 }
 
 console.log("\nDone.");

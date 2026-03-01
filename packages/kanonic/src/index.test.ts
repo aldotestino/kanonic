@@ -1,5 +1,8 @@
+// oxlint-disable jest/no-conditional-in-test
 import { afterAll, describe, expect, test } from "bun:test";
+
 import { z } from "zod";
+
 import {
   ApiError,
   FetchError,
@@ -7,13 +10,13 @@ import {
   OutputValidationError,
   ParseError,
 } from "./errors";
+import type { RetryOptions } from "./index";
 import {
   ApiService,
   createApi,
   createEndpoints,
   validateAllErrors,
   validateClientErrors,
-  type RetryOptions,
 } from "./index";
 
 // Create a mock HTTP server for testing
@@ -74,7 +77,6 @@ export const collectStreamChunks = async <T>(
   return chunks;
 };
 
-
 // Basic API Client Tests (5 tests)
 describe("Basic API Client", () => {
   test("should create API client", () => {
@@ -113,19 +115,19 @@ describe("Basic API Client", () => {
     const result = await api.getTodo();
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      expect(result.value.id).toBe(1);
-      expect(result.value.title).toBe("Test");
-    }
+
+    const value = result.unwrap();
+    expect(value.id).toBe(1);
+    expect(value.title).toBe("Test");
   });
 });
 
 describe("Authentication", () => {
   test("should add Bearer token header", async () => {
-    let authHeader = "";
+    let authHeader: string | null = "";
 
     const { url } = createMockServer((req) => {
-      authHeader = req.headers.get("Authorization") || "";
+      authHeader = req.headers.get("Authorization");
       return Response.json({ success: true });
     });
 
@@ -148,10 +150,10 @@ describe("Authentication", () => {
   });
 
   test("should add Basic auth header", async () => {
-    let authHeader = "";
+    let authHeader: string | null = "";
 
     const { url } = createMockServer((req) => {
-      authHeader = req.headers.get("Authorization") || "";
+      authHeader = req.headers.get("Authorization");
       return Response.json({ success: true });
     });
 
@@ -201,6 +203,7 @@ describe("Validation", () => {
       input: { title: 123 } as unknown as { title: string },
     });
     expect(invalidResult.isErr()).toBe(true);
+
     if (invalidResult.isErr()) {
       expect(invalidResult.error._tag).toBe("InputValidationError");
     }
@@ -245,10 +248,7 @@ describe("Validation", () => {
     const result = await api.getTodo();
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      // When validation is disabled, we get the raw value
-      expect((result.value as { id: unknown }).id).toBe("invalid");
-    }
+    expect((result.unwrap() as unknown as { id: string }).id).toBe("invalid");
   });
 });
 
@@ -341,10 +341,8 @@ describe("Streaming - Basic", () => {
     const result = await api.stream();
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      const chunks = await collectStreamChunks(result.value);
-      expect(chunks).toEqual(["hello", "world"]);
-    }
+    const chunks = await collectStreamChunks(result.unwrap());
+    expect(chunks).toEqual(["hello", "world"]);
   });
 
   test("should return ReadableStream<string> without schema", async () => {
@@ -365,12 +363,12 @@ describe("Streaming - Basic", () => {
     const result = await api.stream();
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      expect(result.value).toBeInstanceOf(ReadableStream);
-      const chunks = await collectStreamChunks(result.value);
-      expect(chunks[0]).toBe("test");
-      expect(typeof chunks[0]).toBe("string");
-    }
+    const value = result.unwrap();
+
+    expect(value).toBeInstanceOf(ReadableStream);
+    const chunks = await collectStreamChunks(value);
+    expect(chunks[0]).toBe("test");
+    expect(typeof chunks[0]).toBe("string");
   });
 
   test("should handle multiple chunks", async () => {
@@ -391,11 +389,10 @@ describe("Streaming - Basic", () => {
     const result = await api.stream();
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      const chunks = await collectStreamChunks(result.value);
-      expect(chunks).toHaveLength(4);
-      expect(chunks).toEqual(["one", "two", "three", "four"]);
-    }
+
+    const chunks = await collectStreamChunks(result.unwrap());
+    expect(chunks).toHaveLength(4);
+    expect(chunks).toEqual(["one", "two", "three", "four"]);
   });
 
   test("should skip empty data lines", async () => {
@@ -424,10 +421,9 @@ describe("Streaming - Basic", () => {
     const result = await api.stream();
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      const chunks = await collectStreamChunks(result.value);
-      expect(chunks).toEqual(["hello", "world"]);
-    }
+
+    const chunks = await collectStreamChunks(result.unwrap());
+    expect(chunks).toEqual(["hello", "world"]);
   });
 
   test("should skip [DONE] markers", async () => {
@@ -456,10 +452,9 @@ describe("Streaming - Basic", () => {
     const result = await api.stream();
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      const chunks = await collectStreamChunks(result.value);
-      expect(chunks).toEqual(["message1", "message2"]);
-    }
+
+    const chunks = await collectStreamChunks(result.unwrap());
+    expect(chunks).toEqual(["message1", "message2"]);
   });
 
   test("should buffer incomplete lines", async () => {
@@ -488,10 +483,9 @@ describe("Streaming - Basic", () => {
     const result = await api.stream();
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      const chunks = await collectStreamChunks(result.value);
-      expect(chunks).toEqual(["hello"]);
-    }
+
+    const chunks = await collectStreamChunks(result.unwrap());
+    expect(chunks).toEqual(["hello"]);
   });
 
   test("should handle stream cancellation", async () => {
@@ -512,18 +506,17 @@ describe("Streaming - Basic", () => {
     const result = await api.stream();
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      const reader = result.value.getReader();
-      const { value } = await reader.read();
-      expect(value).toBe("one");
 
-      // Cancel the stream
-      await reader.cancel();
+    const reader = result.unwrap().getReader();
+    const { value } = await reader.read();
+    expect(value).toBe("one");
 
-      // Stream should be done
-      const { done } = await reader.read();
-      expect(done).toBe(true);
-    }
+    // Cancel the stream
+    await reader.cancel();
+
+    // Stream should be done
+    const { done } = await reader.read();
+    expect(done).toBe(true);
   });
 
   test("should return ApiError before streaming on error", async () => {
@@ -571,12 +564,11 @@ describe("Streaming - Typed with Schema", () => {
     const result = await api.stream();
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      const chunks = await collectStreamChunks(result.value);
-      expect(chunks).toHaveLength(1);
-      expect(chunks[0]?.id).toBe(1);
-      expect(chunks[0]?.msg).toBe("hello");
-    }
+
+    const chunks = await collectStreamChunks(result.unwrap());
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]?.id).toBe(1);
+    expect(chunks[0]?.msg).toBe("hello");
   });
 
   test("should parse JSON chunks with object schema", async () => {
@@ -601,12 +593,11 @@ describe("Streaming - Typed with Schema", () => {
     const result = await api.stream();
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      const chunks = await collectStreamChunks(result.value);
-      expect(chunks).toHaveLength(2);
-      expect(chunks[0]?.id).toBe(1);
-      expect(chunks[1]?.id).toBe(2);
-    }
+
+    const chunks = await collectStreamChunks(result.unwrap());
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0]?.id).toBe(1);
+    expect(chunks[1]?.id).toBe(2);
   });
 
   test("should validate chunks when validateOutput=true", async () => {
@@ -642,13 +633,12 @@ describe("Streaming - Typed with Schema", () => {
     const result = await api.stream();
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      const chunks = await collectStreamChunks(result.value);
-      // Invalid chunk should be skipped
-      expect(chunks).toHaveLength(2);
-      expect(chunks[0]?.id).toBe(1);
-      expect(chunks[1]?.id).toBe(2);
-    }
+
+    const chunks = await collectStreamChunks(result.unwrap());
+    // Invalid chunk should be skipped
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0]?.id).toBe(1);
+    expect(chunks[1]?.id).toBe(2);
   });
 
   test("should skip validation when validateOutput=false", async () => {
@@ -678,12 +668,11 @@ describe("Streaming - Typed with Schema", () => {
     const result = await api.stream();
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      const chunks = await collectStreamChunks(result.value);
-      expect(chunks).toHaveLength(1);
-      // Should receive unvalidated data
-      expect((chunks[0] as { id: unknown }).id).toBe("not-a-number");
-    }
+
+    const chunks = await collectStreamChunks(result.unwrap());
+    expect(chunks).toHaveLength(1);
+    // Should receive unvalidated data
+    expect((chunks[0] as { id: unknown }).id).toBe("not-a-number");
   });
 
   test("should skip invalid JSON chunks with warning", async () => {
@@ -717,13 +706,12 @@ describe("Streaming - Typed with Schema", () => {
     const result = await api.stream();
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      const chunks = await collectStreamChunks(result.value);
-      // Invalid JSON chunk should be skipped
-      expect(chunks).toHaveLength(2);
-      expect(chunks[0]?.id).toBe(1);
-      expect(chunks[1]?.id).toBe(2);
-    }
+
+    const chunks = await collectStreamChunks(result.unwrap());
+    // Invalid JSON chunk should be skipped
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0]?.id).toBe(1);
+    expect(chunks[1]?.id).toBe(2);
   });
 
   test("should skip invalid validation chunks with warning", async () => {
@@ -757,13 +745,12 @@ describe("Streaming - Typed with Schema", () => {
     const result = await api.stream();
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      const chunks = await collectStreamChunks(result.value);
-      // Invalid chunk should be skipped
-      expect(chunks).toHaveLength(2);
-      expect(chunks[0]?.id).toBe(1);
-      expect(chunks[1]?.id).toBe(3);
-    }
+
+    const chunks = await collectStreamChunks(result.unwrap());
+    // Invalid chunk should be skipped
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0]?.id).toBe(1);
+    expect(chunks[1]?.id).toBe(3);
   });
 
   test("should continue stream after invalid chunk", async () => {
@@ -795,12 +782,11 @@ describe("Streaming - Typed with Schema", () => {
     const result = await api.stream();
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      const chunks = await collectStreamChunks(result.value);
-      // Should get 3 valid chunks, 2 invalid skipped
-      expect(chunks).toHaveLength(3);
-      expect(chunks.every((c) => c?.valid === true)).toBe(true);
-    }
+
+    const chunks = await collectStreamChunks(result.unwrap());
+    // Should get 3 valid chunks, 2 invalid skipped
+    expect(chunks).toHaveLength(3);
+    expect(chunks.every((c) => c?.valid === true)).toBe(true);
   });
 
   test("should handle z.string() schema", async () => {
@@ -822,10 +808,9 @@ describe("Streaming - Typed with Schema", () => {
     const result = await api.stream();
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      const chunks = await collectStreamChunks(result.value);
-      expect(chunks).toEqual(["hello", "world"]);
-    }
+
+    const chunks = await collectStreamChunks(result.unwrap());
+    expect(chunks).toEqual(["hello", "world"]);
   });
 
   test("should handle z.number() schema", async () => {
@@ -847,10 +832,9 @@ describe("Streaming - Typed with Schema", () => {
     const result = await api.stream();
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      const chunks = await collectStreamChunks(result.value);
-      expect(chunks).toEqual([42, 100, 999]);
-    }
+
+    const chunks = await collectStreamChunks(result.unwrap());
+    expect(chunks).toEqual([42, 100, 999]);
   });
 
   test("should handle nested schemas", async () => {
@@ -878,12 +862,11 @@ describe("Streaming - Typed with Schema", () => {
     const result = await api.stream();
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      const chunks = await collectStreamChunks(result.value);
-      expect(chunks).toHaveLength(2);
-      expect(chunks[0]?.user.name).toBe("Alice");
-      expect(chunks[1]?.user.name).toBe("Bob");
-    }
+
+    const chunks = await collectStreamChunks(result.unwrap());
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0]?.user.name).toBe("Alice");
+    expect(chunks[1]?.user.name).toBe("Bob");
   });
 });
 
@@ -918,11 +901,10 @@ describe("Integration", () => {
     const result = await api.processStream();
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      const chunks = await collectStreamChunks(result.value);
-      expect(chunks).toHaveLength(2);
-      expect(chunks[0]?.status).toBe("ok");
-    }
+
+    const chunks = await collectStreamChunks(result.unwrap());
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0]?.status).toBe("ok");
   });
 
   test("should handle concurrent API requests", async () => {
@@ -975,12 +957,11 @@ describe("Integration", () => {
     const result = await api.process();
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      const chunks = await collectStreamChunks(result.value);
-      expect(chunks).toHaveLength(3);
-      expect(chunks[0]?.event).toBe("start");
-      expect(chunks[2]?.event).toBe("complete");
-    }
+
+    const chunks = await collectStreamChunks(result.unwrap());
+    expect(chunks).toHaveLength(3);
+    expect(chunks[0]?.event).toBe("start");
+    expect(chunks[2]?.event).toBe("complete");
   });
 });
 
@@ -1381,7 +1362,7 @@ describe("Error Schema Validation", () => {
 
 describe("RequestOptions", () => {
   test("global requestOptions.headers are sent on every request", async () => {
-    let capturedHeader: any = null;
+    let capturedHeader: string | null = "";
 
     const { url } = createMockServer((req) => {
       capturedHeader = req.headers.get("x-global");
@@ -1391,8 +1372,8 @@ describe("RequestOptions", () => {
     const endpoints = createEndpoints({
       getUser: {
         method: "GET",
-        path: "/users",
         output: z.object({ id: z.number(), name: z.string() }),
+        path: "/users",
       },
     });
 
@@ -1407,7 +1388,7 @@ describe("RequestOptions", () => {
   });
 
   test("endpoint-level requestOptions.headers are sent for that endpoint", async () => {
-    let capturedHeader: any = null;
+    let capturedHeader: string | null = "";
 
     const { url } = createMockServer((req) => {
       capturedHeader = req.headers.get("x-endpoint");
@@ -1417,8 +1398,8 @@ describe("RequestOptions", () => {
     const endpoints = createEndpoints({
       getUser: {
         method: "GET",
-        path: "/users",
         output: z.object({ id: z.number(), name: z.string() }),
+        path: "/users",
         requestOptions: { headers: { "x-endpoint": "endpoint-value" } },
       },
     });
@@ -1430,7 +1411,7 @@ describe("RequestOptions", () => {
   });
 
   test("per-call requestOptions.headers are sent for that call", async () => {
-    let capturedHeader: any = null;
+    let capturedHeader: string | null = "";
 
     const { url } = createMockServer((req) => {
       capturedHeader = req.headers.get("x-call");
@@ -1440,8 +1421,8 @@ describe("RequestOptions", () => {
     const endpoints = createEndpoints({
       getUser: {
         method: "GET",
-        path: "/users",
         output: z.object({ id: z.number(), name: z.string() }),
+        path: "/users",
       },
     });
 
@@ -1452,22 +1433,22 @@ describe("RequestOptions", () => {
   });
 
   test("per-call headers override endpoint headers which override global headers", async () => {
-    const captured: Record<string, string> = {};
+    const captured: Record<string, string | null> = {};
 
     const { url } = createMockServer((req) => {
-      captured["x-layer"] = req.headers.get("x-layer") ?? "";
-      captured["x-global-only"] = req.headers.get("x-global-only") ?? "";
-      captured["x-endpoint-only"] = req.headers.get("x-endpoint-only") ?? "";
+      captured["x-layer"] = req.headers.get("x-layer");
+      captured["x-global-only"] = req.headers.get("x-global-only");
+      captured["x-endpoint-only"] = req.headers.get("x-endpoint-only");
       return Response.json({ id: 1, name: "Alice" });
     });
 
     const endpoints = createEndpoints({
       getUser: {
         method: "GET",
-        path: "/users",
         output: z.object({ id: z.number(), name: z.string() }),
+        path: "/users",
         requestOptions: {
-          headers: { "x-layer": "endpoint", "x-endpoint-only": "yes" },
+          headers: { "x-endpoint-only": "yes", "x-layer": "endpoint" },
         },
       },
     });
@@ -1476,19 +1457,19 @@ describe("RequestOptions", () => {
       baseUrl: url,
       endpoints,
       requestOptions: {
-        headers: { "x-layer": "global", "x-global-only": "yes" },
+        headers: { "x-global-only": "yes", "x-layer": "global" },
       },
     });
 
     await api.getUser({ headers: { "x-layer": "call" } });
 
-    expect(captured["x-layer"]).toBe("call");         // call wins
-    expect(captured["x-global-only"]).toBe("yes");    // global flows through
-    expect(captured["x-endpoint-only"]).toBe("yes");  // endpoint flows through
+    expect(captured["x-layer"]).toBe("call"); // call wins
+    expect(captured["x-global-only"]).toBe("yes"); // global flows through
+    expect(captured["x-endpoint-only"]).toBe("yes"); // endpoint flows through
   });
 
   test("per-call headers on a zero-option endpoint (first arg is requestOptions)", async () => {
-    let capturedHeader: any = null;
+    let capturedHeader: string | null = "";
 
     const { url } = createMockServer((req) => {
       capturedHeader = req.headers.get("x-call");
@@ -1498,8 +1479,8 @@ describe("RequestOptions", () => {
     const endpoints = createEndpoints({
       list: {
         method: "GET",
-        path: "/items",
         output: z.array(z.unknown()),
+        path: "/items",
       },
     });
 
@@ -1521,8 +1502,8 @@ describe("RequestOptions", () => {
     const endpoints = createEndpoints({
       getUser: {
         method: "GET",
-        path: "/users",
         output: z.object({ id: z.number(), name: z.string() }),
+        path: "/users",
       },
     });
 
@@ -1547,8 +1528,8 @@ describe("RequestOptions", () => {
     const endpoints = createEndpoints({
       getUser: {
         method: "GET",
-        path: "/users",
         output: z.object({ id: z.number(), name: z.string() }),
+        path: "/users",
       },
     });
 
@@ -1573,22 +1554,26 @@ describe("RequestOptions", () => {
     const { url } = createMockServer((req) => {
       const path = new URL(req.url).pathname;
       const header = req.headers.get("x-only-a") ?? "";
-      if (path === "/a") capturedA["x-only-a"] = header;
-      if (path === "/b") capturedB["x-only-a"] = header;
+      if (path === "/a") {
+        capturedA["x-only-a"] = header;
+      }
+      if (path === "/b") {
+        capturedB["x-only-a"] = header;
+      }
       return Response.json({ id: 1 });
     });
 
     const endpoints = createEndpoints({
       getA: {
         method: "GET",
-        path: "/a",
         output: z.object({ id: z.number() }),
+        path: "/a",
         requestOptions: { headers: { "x-only-a": "yes" } },
       },
       getB: {
         method: "GET",
-        path: "/b",
         output: z.object({ id: z.number() }),
+        path: "/b",
       },
     });
 
@@ -1597,38 +1582,38 @@ describe("RequestOptions", () => {
     await api.getA();
     await api.getB();
 
-    expect(capturedA["x-only-a"]).toBe("yes");   // set on getA
-    expect(capturedB["x-only-a"]).toBe("");       // not leaked to getB
+    expect(capturedA["x-only-a"]).toBe("yes"); // set on getA
+    expect(capturedB["x-only-a"]).toBe(""); // not leaked to getB
   });
 });
 
 // Retry Tests (8 tests)
 describe("Retry", () => {
   const endpoints = createEndpoints({
+    createUser: {
+      input: z.object({ name: z.string() }),
+      method: "POST",
+      output: z.object({ id: z.number(), name: z.string() }),
+      path: "/users",
+    },
     getUser: {
       method: "GET",
-      path: "/users",
       output: z.object({ id: z.number(), name: z.string() }),
-    },
-    createUser: {
-      method: "POST",
       path: "/users",
-      input: z.object({ name: z.string() }),
-      output: z.object({ id: z.number(), name: z.string() }),
     },
   });
 
   const retryOnce: RetryOptions = {
-    times: 1,
-    delayMs: 0,
     backoff: "constant",
+    delayMs: 0,
+    times: 1,
   };
 
   test("succeeds on first try without retrying", async () => {
     let callCount = 0;
 
     const { url } = createMockServer(() => {
-      callCount++;
+      callCount += 1;
       return Response.json({ id: 1, name: "Alice" });
     });
 
@@ -1644,7 +1629,7 @@ describe("Retry", () => {
     let callCount = 0;
 
     const { url } = createMockServer(() => {
-      callCount++;
+      callCount += 1;
       if (callCount < 2) {
         // Force a network error by closing the connection abruptly
         return new Response(null, { status: 500 });
@@ -1663,17 +1648,16 @@ describe("Retry", () => {
     // Use shouldRetry that only retries ApiError with status 500
     const result = await api.getUser({
       retry: {
-        times: 2,
-        delayMs: 0,
         backoff: "constant",
+        delayMs: 0,
         shouldRetry: (err) => err._tag === "ApiError" && err.statusCode === 500,
+        times: 2,
       },
     });
 
     expect(result.isOk()).toBe(true);
-    if (result.isOk()) {
-      expect(result.value).toEqual({ id: 1, name: "Alice" });
-    }
+
+    expect(result.unwrap()).toEqual({ id: 1, name: "Alice" });
     expect(callCount).toBe(2);
   });
 
@@ -1681,9 +1665,12 @@ describe("Retry", () => {
     let callCount = 0;
 
     const { url } = createMockServer(() => {
-      callCount++;
+      callCount += 1;
       if (callCount < 3) {
-        return Response.json({ message: "temporarily unavailable" }, { status: 503 });
+        return Response.json(
+          { message: "temporarily unavailable" },
+          { status: 503 }
+        );
       }
       return Response.json({ id: 2, name: "Bob" });
     });
@@ -1697,7 +1684,7 @@ describe("Retry", () => {
     });
 
     const result = await api.getUser({
-      retry: { times: 3, delayMs: 0, backoff: "constant" },
+      retry: { backoff: "constant", delayMs: 0, times: 3 },
     });
 
     expect(result.isOk()).toBe(true);
@@ -1711,7 +1698,7 @@ describe("Retry", () => {
     let callCount = 0;
 
     const { url } = createMockServer(() => {
-      callCount++;
+      callCount += 1;
       return Response.json({ message: "always fails" }, { status: 500 });
     });
 
@@ -1724,7 +1711,7 @@ describe("Retry", () => {
     });
 
     const result = await api.getUser({
-      retry: { times: 2, delayMs: 0, backoff: "constant" },
+      retry: { backoff: "constant", delayMs: 0, times: 2 },
     });
 
     expect(result.isErr()).toBe(true);
@@ -1742,7 +1729,7 @@ describe("Retry", () => {
     let callCount = 0;
 
     const { url } = createMockServer(() => {
-      callCount++;
+      callCount += 1;
       return Response.json({ message: "client error" }, { status: 400 });
     });
 
@@ -1756,10 +1743,10 @@ describe("Retry", () => {
 
     const result = await api.getUser({
       retry: {
-        times: 3,
-        delayMs: 0,
         backoff: "constant",
+        delayMs: 0,
         shouldRetry: () => false,
+        times: 3,
       },
     });
 
@@ -1772,7 +1759,7 @@ describe("Retry", () => {
     let callCount = 0;
 
     const { url } = createMockServer(() => {
-      callCount++;
+      callCount += 1;
       return Response.json({ message: "server error" }, { status: 500 });
     });
 
@@ -1788,13 +1775,13 @@ describe("Retry", () => {
 
     const result = await api.getUser({
       retry: {
-        times: 2,
-        delayMs: 0,
         backoff: "constant",
+        delayMs: 0,
         shouldRetry: (err) => {
           errorsReceived.push(err._tag);
           return err._tag === "ApiError";
         },
+        times: 2,
       },
     });
 
@@ -1808,16 +1795,16 @@ describe("Retry", () => {
     let callCount = 0;
 
     const { url } = createMockServer(() => {
-      callCount++;
+      callCount += 1;
       return Response.json({ id: 1, name: "Alice" });
     });
 
     const endpointsWithInput = createEndpoints({
       createUser: {
-        method: "POST",
-        path: "/users",
         input: z.object({ name: z.string() }),
+        method: "POST",
         output: z.object({ id: z.number(), name: z.string() }),
+        path: "/users",
       },
     });
 
@@ -1828,10 +1815,10 @@ describe("Retry", () => {
       { name: 42 },
       {
         retry: {
-          times: 5,
-          delayMs: 0,
           backoff: "constant",
+          delayMs: 0,
           shouldRetry: () => true,
+          times: 5,
         },
       }
     );
@@ -1856,7 +1843,7 @@ describe("Retry", () => {
 
     let callCount = 0;
     const { url } = createMockServer(() => {
-      callCount++;
+      callCount += 1;
       if (callCount < 4) {
         return Response.json({ message: "fail" }, { status: 500 });
       }
@@ -1872,7 +1859,7 @@ describe("Retry", () => {
     });
 
     await api.getUser({
-      retry: { times: 3, delayMs: 100, backoff: "exponential" },
+      retry: { backoff: "exponential", delayMs: 100, times: 3 },
     });
 
     // Restore original
