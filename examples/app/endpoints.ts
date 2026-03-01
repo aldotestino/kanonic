@@ -60,66 +60,69 @@ export const apiErrorSchema = z.object({
 // ─── Endpoints ────────────────────────────────────────────────────────────────
 
 export const endpoints = createEndpoints({
-  // Todos
-  getTodos: {
-    method: "GET",
-    output: z.array(todoSchema),
-    path: "/todos",
-  },
-  getTodo: {
-    method: "GET",
-    output: todoSchema,
-    params: z.object({ id: z.number() }),
-    path: "/todos/:id",
-  },
-  createTodo: {
-    input: z.object({ title: z.string().min(1), userId: z.number() }),
-    method: "POST",
-    output: todoSchema,
-    path: "/todos",
-  },
-  updateTodo: {
-    input: z.object({ completed: z.boolean() }),
-    method: "PATCH",
-    output: todoSchema,
-    params: z.object({ id: z.number() }),
-    path: "/todos/:id",
-  },
-
-  // Posts & comments
-  getPosts: {
-    method: "GET",
-    output: z.array(postSchema),
-    path: "/posts",
-  },
-  getPost: {
-    method: "GET",
-    output: postSchema,
-    params: z.object({ id: z.number() }),
-    path: "/posts/:id",
-  },
-  getComments: {
-    method: "GET",
-    output: z.array(commentSchema),
-    params: z.object({ postId: z.number() }),
-    path: "/posts/:postId/comments",
+  todos: {
+    list: {
+      method: "GET",
+      output: z.array(todoSchema),
+      path: "/todos",
+    },
+    get: {
+      method: "GET",
+      output: todoSchema,
+      params: z.object({ id: z.number() }),
+      path: "/todos/:id",
+    },
+    create: {
+      input: z.object({ title: z.string().min(1), userId: z.number() }),
+      method: "POST",
+      output: todoSchema,
+      path: "/todos",
+    },
+    update: {
+      input: z.object({ completed: z.boolean() }),
+      method: "PATCH",
+      output: todoSchema,
+      params: z.object({ id: z.number() }),
+      path: "/todos/:id",
+    },
   },
 
-  // Users
-  getUsers: {
-    method: "GET",
-    output: z.array(userSchema),
-    path: "/users",
+  posts: {
+    list: {
+      method: "GET",
+      output: z.array(postSchema),
+      path: "/posts",
+    },
+    get: {
+      method: "GET",
+      output: postSchema,
+      params: z.object({ id: z.number() }),
+      path: "/posts/:id",
+    },
+    comments: {
+      method: "GET",
+      output: z.array(commentSchema),
+      params: z.object({ postId: z.number() }),
+      path: "/posts/:postId/comments",
+    },
   },
-  getUser: {
-    method: "GET",
-    path: "/users/:id",
-    params: z.object({ id: z.number() }),
-    output: userSchema,
-    // Endpoint-level requestOptions: applied to every call of this endpoint,
-    // on top of any global requestOptions, but overridable per-call.
-    requestOptions: {
-      headers: { "X-Requires-Auth": "true" },
+
+  users: {
+    list: {
+      method: "GET",
+      output: z.array(userSchema),
+      path: "/users",
+    },
+    get: {
+      method: "GET",
+      output: userSchema,
+      params: z.object({ id: z.number() }),
+      path: "/users/:id",
+      // Endpoint-level requestOptions: applied to every call of this endpoint,
+      // on top of any global requestOptions, but overridable per-call.
+      requestOptions: {
+        headers: { "X-Requires-Auth": "true" },
+      },
     },
   },
 

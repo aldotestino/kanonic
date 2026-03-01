@@ -1870,3 +1870,272 @@ describe("Retry", () => {
     expect(callCount).toBe(4);
   });
 });
+
+// Nested endpoint tree tests
+describe("Nested Endpoints", () => {
+  test("should create client with nested groups", () => {
+    const endpoints = createEndpoints({
+      todos: {
+        list: {
+          method: "GET",
+          output: z.array(z.object({ id: z.number(), title: z.string() })),
+          path: "/todos",
+        },
+        get: {
+          method: "GET",
+          output: z.object({ id: z.number(), title: z.string() }),
+          params: z.object({ id: z.number() }),
+          path: "/todos/:id",
+        },
+      },
+      users: {
+        list: {
+          method: "GET",
+          output: z.array(z.object({ id: z.number(), name: z.string() })),
+          path: "/users",
+        },
+      },
+    });
+
+    const api = createApi({ baseUrl: "https://api.example.com", endpoints });
+
+    expect(api.todos).toBeDefined();
+    expect(typeof api.todos.list).toBe("function");
+    expect(typeof api.todos.get).toBe("function");
+    expect(api.users).toBeDefined();
+    expect(typeof api.users.list).toBe("function");
+  });
+
+  test("nested zero-option endpoint returns correct data", async () => {
+    const { url } = createMockServer(() =>
+      Response.json([
+        { id: 1, title: "First" },
+        { id: 2, title: "Second" },
+      ])
+    );
+
+    const endpoints = createEndpoints({
+      todos: {
+        list: {
+          method: "GET",
+          output: z.array(z.object({ id: z.number(), title: z.string() })),
+          path: "/todos",
+        },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    const result = await api.todos.list();
+
+    expect(result.isOk()).toBe(true);
+    const value = result.unwrap();
+    expect(value).toHaveLength(2);
+    expect(value[0]?.title).toBe("First");
+  });
+
+  test("nested endpoint with params returns correct data", async () => {
+    const { url } = createMockServer(() =>
+      Response.json({ id: 42, title: "Nested todo" })
+    );
+
+    const endpoints = createEndpoints({
+      todos: {
+        get: {
+          method: "GET",
+          output: z.object({ id: z.number(), title: z.string() }),
+          params: z.object({ id: z.number() }),
+          path: "/todos/:id",
+        },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    const result = await api.todos.get({ params: { id: 42 } });
+
+    expect(result.isOk()).toBe(true);
+    const value = result.unwrap();
+    expect(value.id).toBe(42);
+    expect(value.title).toBe("Nested todo");
+  });
+
+  test("nested POST endpoint with input works", async () => {
+    let receivedBody: unknown;
+
+    const { url } = createMockServer(async (req) => {
+      receivedBody = await req.json();
+      return Response.json({ id: 1, title: "Created" });
+    });
+
+    const endpoints = createEndpoints({
+      todos: {
+        create: {
+          input: z.object({ title: z.string() }),
+          method: "POST",
+          output: z.object({ id: z.number(), title: z.string() }),
+          path: "/todos",
+        },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    const result = await api.todos.create({ input: { title: "Created" } });
+
+    expect(result.isOk()).toBe(true);
+    expect(receivedBody).toEqual({ title: "Created" });
+  });
+
+  test("nested endpoint returns ApiError on 4xx", async () => {
+    const { url } = createMockServer(
+      () => new Response("Not Found", { status: 404 })
+    );
+
+    const endpoints = createEndpoints({
+      todos: {
+        get: {
+          method: "GET",
+          output: z.object({ id: z.number() }),
+          params: z.object({ id: z.number() }),
+          path: "/todos/:id",
+        },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    const result = await api.todos.get({ params: { id: 99 } });
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error._tag).toBe("ApiError");
+      expect((result.error as ApiError).statusCode).toBe(404);
+    }
+  });
+
+  test("deeply nested endpoints work", async () => {
+    const { url } = createMockServer(() =>
+      Response.json({ id: 1, body: "comment" })
+    );
+
+    const endpoints = createEndpoints({
+      posts: {
+        comments: {
+          get: {
+            method: "GET",
+            output: z.object({ id: z.number(), body: z.string() }),
+            params: z.object({ postId: z.number(), commentId: z.number() }),
+            path: "/posts/:postId/comments/:commentId",
+          },
+        },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    const result = await api.posts.comments.get({
+      params: { commentId: 1, postId: 1 },
+    });
+
+    expect(result.isOk()).toBe(true);
+    const value = result.unwrap();
+    expect(value.body).toBe("comment");
+  });
+
+  test("nested endpoint-level requestOptions are scoped per endpoint", async () => {
+    const captured: Record<string, string | null> = {};
+
+    const { url } = createMockServer((req) => {
+      const path = new URL(req.url).pathname;
+      if (path === "/todos") {
+        captured["todos"] = req.headers.get("x-only-todos");
+      }
+      if (path === "/users") {
+        captured["users"] = req.headers.get("x-only-todos");
+      }
+      return Response.json([]);
+    });
+
+    const endpoints = createEndpoints({
+      todos: {
+        list: {
+          method: "GET",
+          output: z.array(z.unknown()),
+          path: "/todos",
+          requestOptions: { headers: { "x-only-todos": "yes" } },
+        },
+      },
+      users: {
+        list: {
+          method: "GET",
+          output: z.array(z.unknown()),
+          path: "/users",
+        },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    await api.todos.list();
+    await api.users.list();
+
+    expect(captured["todos"]).toBe("yes");
+    expect(captured["users"]).toBeNull();
+  });
+
+  test("per-call requestOptions work on nested endpoints", async () => {
+    let capturedHeader = "";
+
+    const { url } = createMockServer((req) => {
+      capturedHeader = req.headers.get("x-call") ?? "";
+      return Response.json({ id: 1 });
+    });
+
+    const endpoints = createEndpoints({
+      todos: {
+        get: {
+          method: "GET",
+          output: z.object({ id: z.number() }),
+          params: z.object({ id: z.number() }),
+          path: "/todos/:id",
+        },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+    await api.todos.get(
+      { params: { id: 1 } },
+      { headers: { "x-call": "per-call-value" } }
+    );
+
+    expect(capturedHeader).toBe("per-call-value");
+  });
+
+  test("flat and nested endpoints can coexist", async () => {
+    const { url } = createMockServer((req) => {
+      const path = new URL(req.url).pathname;
+      if (path === "/health") {
+        return Response.json({ ok: true });
+      }
+      return Response.json([]);
+    });
+
+    const endpoints = createEndpoints({
+      health: {
+        method: "GET",
+        output: z.object({ ok: z.boolean() }),
+        path: "/health",
+      },
+      todos: {
+        list: {
+          method: "GET",
+          output: z.array(z.unknown()),
+          path: "/todos",
+        },
+      },
+    });
+
+    const api = createApi({ baseUrl: url, endpoints });
+
+    const healthResult = await api.health();
+    const todosResult = await api.todos.list();
+
+    expect(healthResult.isOk()).toBe(true);
+    expect(todosResult.isOk()).toBe(true);
+  });
+});

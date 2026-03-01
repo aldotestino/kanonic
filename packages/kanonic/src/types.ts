@@ -97,6 +97,37 @@ export type NonGetEndpoint = BaseEndpoint & {
 
 export type Endpoint = GetEndpoint | NonGetEndpoint;
 
+/**
+ * A recursive tree of endpoints. Leaves are `Endpoint` objects; nodes are
+ * plain objects grouping related endpoints.
+ *
+ * @example
+ * ```ts
+ * const endpoints = createEndpoints({
+ *   todos: {
+ *     list:   { method: "GET",  path: "/todos",    output: todoSchema },
+ *     create: { method: "POST", path: "/todos",    input: newTodoSchema, output: todoSchema },
+ *     get:    { method: "GET",  path: "/todos/:id", params: z.object({ id: z.number() }), output: todoSchema },
+ *   },
+ *   users: {
+ *     list: { method: "GET", path: "/users", output: z.array(userSchema) },
+ *   },
+ * });
+ *
+ * // Usage:
+ * await api.todos.list()
+ * await api.todos.create({ input: { title: "Buy milk" } })
+ * await api.users.list()
+ * ```
+ */
+export interface EndpointTree {
+  [key: string]: Endpoint | EndpointTree;
+}
+
+// Distinguishes a leaf Endpoint from a nested group at the type level.
+// An Endpoint always has a `method` property; a group never does.
+export type IsEndpoint<T> = T extends { method: Method } ? true : false;
+
 // All possible API errors
 export type ApiErrors<E = unknown> =
   | FetchError
@@ -172,9 +203,19 @@ export type EndpointFunction<
   ? ZeroOptionEndpointFunction<E, ErrType>
   : OptionEndpointFunction<E, ErrType>;
 
-// The final API client type
-export type ApiClient<T extends Record<string, Endpoint>, E = unknown> = {
-  [K in keyof T]: EndpointFunction<T[K], E>;
+/**
+ * Recursively maps an EndpointTree to a client object:
+ * - leaf Endpoint  → EndpointFunction
+ * - nested group   → ApiClient (recursed)
+ */
+export type ApiClient<T extends EndpointTree, E = unknown> = {
+  [K in keyof T]: IsEndpoint<T[K]> extends true
+    ? T[K] extends Endpoint
+      ? EndpointFunction<T[K], E>
+      : never
+    : T[K] extends EndpointTree
+      ? ApiClient<T[K], E>
+      : never;
 };
 
 export type Auth =

@@ -11,12 +11,14 @@ import type {
   ApiErrors,
   Auth,
   Endpoint,
+  EndpointTree,
   RequestOptions,
 } from "./types";
 import {
   buildAuthHeader,
   buildUrl,
   extractDataLine,
+  isEndpoint,
   parseErrorResponse,
   processStreamChunk,
   safeFetch,
@@ -164,29 +166,239 @@ const handleStreamResponse = <E>(
     return Result.ok(stream);
   });
 
+// Builds the endpoint function for a single leaf endpoint
+const buildEndpointFn = <E>(
+  endpoint: Endpoint,
+  baseUrl: string,
+  authHeader: Record<string, string>,
+  globalHeaders: RequestInit["headers"],
+  globalRestOptions: Record<string, unknown>,
+  validateInput: boolean,
+  validateOutput: boolean,
+  errorSchema?: z.ZodType<E>,
+  shouldValidateError?: (statusCode: number) => boolean
+) => {
+  const { headers: endpointHeaders, ...endpointRestOptions } =
+    endpoint.requestOptions ?? {};
+
+  return async (
+    optionsOrRequestOptions?: Record<string, unknown> | RequestOptions<E>,
+    maybeRequestOptions?: RequestOptions<E>
+  ): Promise<Result<unknown, ApiErrors<E>>> => {
+    const hasSchemaOptions = ["input", "params", "query"].some(
+      (k) => k in endpoint && endpoint[k as keyof Endpoint] !== undefined
+    );
+
+    const schemaOptions = hasSchemaOptions
+      ? (optionsOrRequestOptions as
+          | {
+              input?: unknown;
+              params?: Record<string, unknown>;
+              query?: Record<string, unknown>;
+            }
+          | undefined)
+      : undefined;
+
+    const callRequestOptions: RequestOptions<E> | undefined = hasSchemaOptions
+      ? maybeRequestOptions
+      : (optionsOrRequestOptions as RequestOptions<E> | undefined);
+
+    const {
+      headers: callHeaders,
+      retry,
+      ...callRestOptions
+    } = callRequestOptions ?? {};
+
+    // --- Validation ---
+    let validatedInput = schemaOptions?.input;
+    if (
+      validateInput &&
+      endpoint.method !== "GET" &&
+      "input" in endpoint &&
+      endpoint.input
+    ) {
+      const inputResult = endpoint.input.safeParse(schemaOptions?.input);
+      if (!inputResult.success) {
+        return Result.err(
+          new InputValidationError({
+            message: "Invalid input",
+            zodError: inputResult.error,
+          })
+        );
+      }
+      validatedInput = inputResult.data;
+    }
+
+    let validatedParams: Record<string, unknown> | undefined =
+      schemaOptions?.params;
+    if (validateInput && endpoint.params) {
+      const paramsResult = endpoint.params.safeParse(schemaOptions?.params);
+      if (!paramsResult.success) {
+        return Result.err(
+          new InputValidationError({
+            message: "Invalid params",
+            zodError: paramsResult.error,
+          })
+        );
+      }
+      validatedParams = paramsResult.data as Record<string, unknown>;
+    }
+
+    let validatedQuery: Record<string, unknown> | undefined =
+      schemaOptions?.query;
+    if (validateInput && endpoint.query) {
+      const queryResult = endpoint.query.safeParse(schemaOptions?.query);
+      if (!queryResult.success) {
+        return Result.err(
+          new InputValidationError({
+            message: "Invalid query",
+            zodError: queryResult.error,
+          })
+        );
+      }
+      validatedQuery = queryResult.data as Record<string, unknown>;
+    }
+
+    // --- Build URL and merged options ---
+    const url = buildUrl({
+      baseUrl,
+      params: validatedParams,
+      path: endpoint.path,
+      query: validatedQuery,
+    });
+
+    const mergedRestOptions = {
+      ...globalRestOptions,
+      ...endpointRestOptions,
+      ...callRestOptions,
+    };
+
+    const headers: RequestInit["headers"] = {
+      ...authHeader,
+      ...globalHeaders,
+      ...endpointHeaders,
+      ...callHeaders,
+      "Content-Type": "application/json",
+    };
+
+    // --- Core attempt ---
+    const attempt = (): Promise<Result<unknown, ApiErrors<E>>> =>
+      Result.gen(async function* () {
+        const response = yield* Result.await(
+          safeFetch(url, {
+            method: endpoint.method,
+            headers,
+            body:
+              endpoint.method === "GET"
+                ? undefined
+                : JSON.stringify(validatedInput),
+            ...mergedRestOptions,
+          })
+        );
+
+        if (endpoint.stream?.enabled) {
+          const stream = yield* Result.await(
+            handleStreamResponse(
+              response,
+              endpoint.output,
+              validateOutput,
+              errorSchema,
+              shouldValidateError
+            )
+          );
+          return Result.ok(stream);
+        }
+
+        const outputSchema = endpoint.output ?? z.unknown();
+        const result = yield* Result.await(
+          handleJsonResponse(
+            response,
+            outputSchema,
+            validateOutput,
+            errorSchema,
+            shouldValidateError
+          )
+        );
+        return Result.ok(result);
+      });
+
+    if (!retry) {
+      return attempt();
+    }
+
+    return withRetry(attempt, retry);
+  };
+};
+
+// Recursively builds the client object mirroring the endpoint tree shape
+const buildClientNode = <E>(
+  tree: EndpointTree,
+  baseUrl: string,
+  authHeader: Record<string, string>,
+  globalHeaders: RequestInit["headers"],
+  globalRestOptions: Record<string, unknown>,
+  validateInput: boolean,
+  validateOutput: boolean,
+  errorSchema?: z.ZodType<E>,
+  shouldValidateError?: (statusCode: number) => boolean
+): Record<string, unknown> => {
+  const node: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(tree)) {
+    node[key] = isEndpoint(value)
+      ? buildEndpointFn(
+          value,
+          baseUrl,
+          authHeader,
+          globalHeaders,
+          globalRestOptions,
+          validateInput,
+          validateOutput,
+          errorSchema,
+          shouldValidateError
+        )
+      : buildClientNode(
+          value as EndpointTree,
+          baseUrl,
+          authHeader,
+          globalHeaders,
+          globalRestOptions,
+          validateInput,
+          validateOutput,
+          errorSchema,
+          shouldValidateError
+        );
+  }
+
+  return node;
+};
+
 /**
  * Creates a type-safe API client from endpoint definitions.
+ * Supports both flat and nested endpoint trees.
  *
  * @example
  * ```ts
+ * // Flat
+ * const api = createApi({ baseUrl, endpoints: { getUser: { method: "GET", ... } } });
+ * await api.getUser({ params: { id: 1 } });
+ *
+ * // Nested
  * const api = createApi({
- *   baseUrl: "https://api.example.com",
- *   endpoints,
- *   auth: { type: "bearer", token: "..." },
- *   requestOptions: { credentials: "include" },
- *   errorSchema,
- *   shouldValidateError: validateClientErrors,
+ *   baseUrl,
+ *   endpoints: {
+ *     users: {
+ *       list:   { method: "GET",  path: "/users",    output: z.array(userSchema) },
+ *       get:    { method: "GET",  path: "/users/:id", params: z.object({ id: z.number() }), output: userSchema },
+ *       create: { method: "POST", path: "/users",    input: newUserSchema, output: userSchema },
+ *     },
+ *   },
  * });
- *
- * // Per-call options (second argument on endpoints with schema options)
- * const ac = new AbortController();
- * const result = await api.getUser({ params: { id: 1 } }, { signal: ac.signal });
- *
- * // Zero-option endpoints take requestOptions as first argument
- * const result = await api.listUsers({ signal: ac.signal });
+ * await api.users.list();
+ * await api.users.get({ params: { id: 1 } });
  * ```
  */
-export const createApi = <T extends Record<string, Endpoint>, E = unknown>({
+export const createApi = <T extends EndpointTree, E = unknown>({
   baseUrl,
   endpoints,
   auth,
@@ -210,174 +422,35 @@ export const createApi = <T extends Record<string, Endpoint>, E = unknown>({
   const { headers: globalHeaders, ...globalRestOptions } =
     globalRequestOptions ?? {};
 
-  const client = {} as ApiClient<T, E>;
-
-  for (const [name, endpoint] of Object.entries(endpoints)) {
-    const { headers: endpointHeaders, ...endpointRestOptions } =
-      endpoint.requestOptions ?? {};
-
-    // The runtime function handles both call signatures:
-    //   zero-option:  (requestOptions?)
-    //   with-options: (options, requestOptions?)
-    const endpointFn = async (
-      optionsOrRequestOptions?: Record<string, unknown> | RequestOptions<E>,
-      maybeRequestOptions?: RequestOptions<E>
-    ): Promise<Result<unknown, ApiErrors<E>>> => {
-      // Determine which arg is which based on whether the endpoint has schema keys
-      const hasSchemaOptions = ["input", "params", "query"].some(
-        (k) => k in endpoint && endpoint[k as keyof Endpoint] !== undefined
-      );
-
-      const schemaOptions = hasSchemaOptions
-        ? (optionsOrRequestOptions as
-            | {
-                input?: unknown;
-                params?: Record<string, unknown>;
-                query?: Record<string, unknown>;
-              }
-            | undefined)
-        : undefined;
-
-      const callRequestOptions: RequestOptions<E> | undefined = hasSchemaOptions
-        ? maybeRequestOptions
-        : (optionsOrRequestOptions as RequestOptions<E> | undefined);
-
-      const {
-        headers: callHeaders,
-        retry,
-        ...callRestOptions
-      } = callRequestOptions ?? {};
-
-      // --- Validation phase (plain async, returns Result early on error) ---
-      let validatedInput = schemaOptions?.input;
-      if (
-        validateInput &&
-        endpoint.method !== "GET" &&
-        "input" in endpoint &&
-        endpoint.input
-      ) {
-        const inputResult = endpoint.input.safeParse(schemaOptions?.input);
-        if (!inputResult.success) {
-          return Result.err(
-            new InputValidationError({
-              message: "Invalid input",
-              zodError: inputResult.error,
-            })
-          );
-        }
-        validatedInput = inputResult.data;
-      }
-
-      let validatedParams: Record<string, unknown> | undefined =
-        schemaOptions?.params;
-      if (validateInput && endpoint.params) {
-        const paramsResult = endpoint.params.safeParse(schemaOptions?.params);
-        if (!paramsResult.success) {
-          return Result.err(
-            new InputValidationError({
-              message: "Invalid params",
-              zodError: paramsResult.error,
-            })
-          );
-        }
-        validatedParams = paramsResult.data as Record<string, unknown>;
-      }
-
-      let validatedQuery: Record<string, unknown> | undefined =
-        schemaOptions?.query;
-      if (validateInput && endpoint.query) {
-        const queryResult = endpoint.query.safeParse(schemaOptions?.query);
-        if (!queryResult.success) {
-          return Result.err(
-            new InputValidationError({
-              message: "Invalid query",
-              zodError: queryResult.error,
-            })
-          );
-        }
-        validatedQuery = queryResult.data as Record<string, unknown>;
-      }
-
-      // --- Build URL and merged options (sync) ---
-      const url = buildUrl({
-        baseUrl,
-        params: validatedParams,
-        path: endpoint.path,
-        query: validatedQuery,
-      });
-
-      const mergedRestOptions = {
-        ...globalRestOptions,
-        ...endpointRestOptions,
-        ...callRestOptions,
-      };
-
-      const headers: RequestInit["headers"] = {
-        ...authHeader,
-        ...globalHeaders,
-        ...endpointHeaders,
-        ...callHeaders,
-        "Content-Type": "application/json",
-      };
-
-      // --- Core attempt: fetch + handle response (standalone Result.gen, no nesting) ---
-      const attempt = (): Promise<Result<unknown, ApiErrors<E>>> =>
-        Result.gen(async function* () {
-          const response = yield* Result.await(
-            safeFetch(url, {
-              method: endpoint.method,
-              headers,
-              body:
-                endpoint.method === "GET"
-                  ? undefined
-                  : JSON.stringify(validatedInput),
-              ...mergedRestOptions,
-            })
-          );
-
-          if (endpoint.stream?.enabled) {
-            const stream = yield* Result.await(
-              handleStreamResponse(
-                response,
-                endpoint.output,
-                validateOutput,
-                errorSchema,
-                shouldValidateError
-              )
-            );
-            return Result.ok(stream);
-          }
-
-          const outputSchema = endpoint.output ?? z.unknown();
-          const result = yield* Result.await(
-            handleJsonResponse(
-              response,
-              outputSchema,
-              validateOutput,
-              errorSchema,
-              shouldValidateError
-            )
-          );
-          return Result.ok(result);
-        });
-
-      // --- No retry: single attempt ---
-      if (!retry) {
-        return attempt();
-      }
-
-      return withRetry(attempt, retry);
-    };
-
-    (client as Record<string, unknown>)[name] = endpointFn;
-  }
-
-  return client;
+  return buildClientNode(
+    endpoints,
+    baseUrl,
+    authHeader,
+    globalHeaders,
+    globalRestOptions,
+    validateInput,
+    validateOutput,
+    errorSchema,
+    shouldValidateError
+  ) as ApiClient<T, E>;
 };
 
-export const createEndpoints = <T extends Record<string, Endpoint>>(
-  endpoints: T
-) => endpoints;
+/**
+ * Identity function that infers and preserves the full static type of an
+ * endpoint tree (flat or nested).
+ *
+ * @example
+ * ```ts
+ * const endpoints = createEndpoints({
+ *   todos: {
+ *     list:   { method: "GET",  path: "/todos",    output: todoSchema },
+ *     create: { method: "POST", path: "/todos",    input: newTodoSchema, output: todoSchema },
+ *   },
+ * });
+ * ```
+ */
+export const createEndpoints = <T extends EndpointTree>(endpoints: T) =>
+  endpoints;
 
 /**
  * Creates an API service base class with typed endpoints and optional error schema.
@@ -391,7 +464,7 @@ export const createEndpoints = <T extends Record<string, Endpoint>>(
  * }
  * ```
  */
-export const ApiService = <T extends Record<string, Endpoint>, E = unknown>(
+export const ApiService = <T extends EndpointTree, E = unknown>(
   endpoints: T,
   errorSchema?: z.ZodType<E>
 ) =>
