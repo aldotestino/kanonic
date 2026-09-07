@@ -1,6 +1,6 @@
 {
   "name": "@okfetch/fetch",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "A type-safe fetch wrapper with validation, retries, plugins, and streaming.",
   "keywords": [
     "fetch",

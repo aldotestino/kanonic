@@ -59,7 +59,7 @@
     },
     "packages/api": {
       "name": "@okfetch/api",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "dependencies": {
         "@okfetch/fetch": "^0.5.0",
       },
@@ -76,7 +76,7 @@
     },
     "packages/fetch": {
       "name": "@okfetch/fetch",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "dependencies": {
         "@standard-schema/spec": "^1.1.0",
       },
@@ -91,7 +91,7 @@
     },
     "packages/logger": {
       "name": "@okfetch/logger",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "dependencies": {
         "pino": "^10.3.1",
       },
@@ -106,7 +106,7 @@
     },
     "packages/otel": {
       "name": "@okfetch/otel",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "devDependencies": {
         "@okfetch/fetch": "^0.5.0",
         "@opentelemetry/api": "^1.9.0",

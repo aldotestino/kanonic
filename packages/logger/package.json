@@ -1,6 +1,6 @@
 {
   "name": "@okfetch/logger",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "A pino-based logging plugin for okfetch request lifecycles.",
   "keywords": [
     "fetch",
@@ -41,11 +41,11 @@
     "pino": "^10.3.1"
   },
   "devDependencies": {
-    "@okfetch/fetch": "^0.5.0",
+    "@okfetch/fetch": "^0.6.0",
     "@types/bun": "latest"
   },
   "peerDependencies": {
-    "@okfetch/fetch": "^0.5.0",
+    "@okfetch/fetch": "^0.6.0",
     "pino": "^10.3.1"
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@okfetch/otel",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "An OpenTelemetry tracing plugin for okfetch request lifecycles.",
   "keywords": [
     "fetch",
@@ -39,7 +39,7 @@
     "access": "public"
   },
   "devDependencies": {
-    "@okfetch/fetch": "^0.5.0",
+    "@okfetch/fetch": "^0.6.0",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/context-async-hooks": "^2.0.0",
     "@opentelemetry/core": "^2.0.0",
@@ -48,7 +48,7 @@
     "better-result": "^3.0.1"
   },
   "peerDependencies": {
-    "@okfetch/fetch": "^0.5.0",
+    "@okfetch/fetch": "^0.6.0",
     "@opentelemetry/api": "^1.9.0"
   }
 }
