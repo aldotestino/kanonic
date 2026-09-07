@@ -185,6 +185,79 @@ describe("okfetch v2 plugins", () => {
     }
   });
 
+  test("includes the response on successful calls when requested", async () => {
+    const response = Response.json({ ok: true }, { status: 201 });
+    const result = await okfetch("https://example.com/todos", {
+      fetch: createMockFetch(() => response),
+      includeResponse: true,
+      outputSchema: z.object({ ok: z.boolean() }),
+    });
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      expect(result.value.data).toEqual({ ok: true });
+      expect(result.value.response).toBe(response);
+      expect(result.value.response.status).toBe(201);
+    }
+  });
+
+  test("includes the response on API errors when requested", async () => {
+    const response = Response.json({ message: "Nope" }, { status: 422 });
+    const result = await okfetch("https://example.com/todos", {
+      fetch: createMockFetch(() => response),
+      includeResponse: true,
+    });
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr() && result.error._tag === "ApiError") {
+      expect(result.error.response).toBe(response);
+      expect(result.error.response?.status).toBe(422);
+    }
+  });
+
+  test("does not let init plugins change the declared response shape", async () => {
+    const addResponsePlugin: OkfetchPlugin = {
+      name: "add-response",
+      version: "1.0.0",
+      init: ({ options, url }) => ({
+        options: { ...options, includeResponse: true },
+        url,
+      }),
+    };
+    const removeResponsePlugin: OkfetchPlugin = {
+      name: "remove-response",
+      version: "1.0.0",
+      init: ({ options, url }) => ({
+        options: { ...options, includeResponse: false },
+        url,
+      }),
+    };
+    const fetch = createMockFetch(() => Response.json({ ok: true }));
+
+    const plainResult = await okfetch<{ ok: boolean }>(
+      "https://example.com/todos",
+      { fetch, plugins: [addResponsePlugin] }
+    );
+    expect(plainResult.isOk()).toBe(true);
+    if (plainResult.isOk()) {
+      expect(plainResult.value).toEqual({ ok: true });
+    }
+
+    const responseResult = await okfetch<{ ok: boolean }>(
+      "https://example.com/todos",
+      {
+        fetch,
+        includeResponse: true,
+        plugins: [removeResponsePlugin],
+      }
+    );
+    expect(responseResult.isOk()).toBe(true);
+    if (responseResult.isOk()) {
+      expect(responseResult.value.data).toEqual({ ok: true });
+      expect(responseResult.value.response.status).toBe(200);
+    }
+  });
+
   test("executes init hooks in order and rewrites raw url and options", async () => {
     let finalInput: OkfetchPluginInitInput | undefined;
     let requestUrl = "";

@@ -88,11 +88,27 @@ result.match({
 - `stream`
 - `validateOutput`
 - `shouldValidateError`
+- `includeResponse`
 - `plugins`
 - `retry`
 - `fetch`
 
 Any schema object that implements Standard Schema v1 can be used for `outputSchema` and `apiErrorDataSchema`.
+
+Set `includeResponse: true` on an individual call when you need response metadata. Successful
+results then contain `{ data, response }`; by default they continue to contain the parsed data
+directly. `ApiError.response` is also populated when the flag is enabled.
+
+```ts
+const result = await okfetch("https://example.com/todos/1", {
+  includeResponse: true,
+  outputSchema: todoSchema,
+});
+
+if (result.isOk()) {
+  console.log(result.value.data, result.value.response.status);
+}
+```
 
 ### URL building
 

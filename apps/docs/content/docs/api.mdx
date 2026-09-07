@@ -201,6 +201,10 @@ if (result.isErr() && result.error._tag === "ApiError") {
 }
 ```
 
+Pass `includeResponse: true` in an endpoint's per-call overrides when you need response metadata.
+Successful results then contain `{ data, response }`, and `ApiError.response` is populated for
+non-2xx responses. Calls without the flag keep returning endpoint data directly.
+
 ## Streaming endpoints
 
 Mark an endpoint `stream: true` and `output` describes a single chunk rather than the whole

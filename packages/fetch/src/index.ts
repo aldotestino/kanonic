@@ -14,6 +14,7 @@ export type {
   OkfetchPlugin,
   OkfetchPluginHooks,
   OkfetchPluginInitInput,
+  OkfetchResponse,
   OkfetchRequestContext,
   OkfetchSuccess,
   Method,
