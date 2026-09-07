@@ -1,5 +1,11 @@
 # @okfetch/fetch
 
+## 0.6.0
+
+### Minor Changes
+
+- 1e9f8f5: Add a per-call `includeResponse` option that includes the underlying `Response` with successful data and API errors.
+
 ## 0.5.0
 
 ### Patch Changes
