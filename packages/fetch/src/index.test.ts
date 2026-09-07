@@ -215,6 +215,49 @@ describe("okfetch v2 plugins", () => {
     }
   });
 
+  test("does not let init plugins change the declared response shape", async () => {
+    const addResponsePlugin: OkfetchPlugin = {
+      name: "add-response",
+      version: "1.0.0",
+      init: ({ options, url }) => ({
+        options: { ...options, includeResponse: true },
+        url,
+      }),
+    };
+    const removeResponsePlugin: OkfetchPlugin = {
+      name: "remove-response",
+      version: "1.0.0",
+      init: ({ options, url }) => ({
+        options: { ...options, includeResponse: false },
+        url,
+      }),
+    };
+    const fetch = createMockFetch(() => Response.json({ ok: true }));
+
+    const plainResult = await okfetch<{ ok: boolean }>(
+      "https://example.com/todos",
+      { fetch, plugins: [addResponsePlugin] }
+    );
+    expect(plainResult.isOk()).toBe(true);
+    if (plainResult.isOk()) {
+      expect(plainResult.value).toEqual({ ok: true });
+    }
+
+    const responseResult = await okfetch<{ ok: boolean }>(
+      "https://example.com/todos",
+      {
+        fetch,
+        includeResponse: true,
+        plugins: [removeResponsePlugin],
+      }
+    );
+    expect(responseResult.isOk()).toBe(true);
+    if (responseResult.isOk()) {
+      expect(responseResult.value.data).toEqual({ ok: true });
+      expect(responseResult.value.response.status).toBe(200);
+    }
+  });
+
   test("executes init hooks in order and rewrites raw url and options", async () => {
     let finalInput: OkfetchPluginInitInput | undefined;
     let requestUrl = "";

@@ -437,6 +437,7 @@ export async function okfetch<TRes = unknown, TErr = unknown>(
   options?: OkfetchOptions
 ): Promise<Result<TRes | OkfetchResponse<TRes>, OkfetchError<TErr>>> {
   const resolvedInputOptions = options ?? {};
+  const includeResponse = resolvedInputOptions.includeResponse;
   const plugins = resolvedInputOptions.plugins ?? [];
   const initResult = await runPluginInit(plugins, {
     options: resolvedInputOptions,
@@ -450,7 +451,10 @@ export async function okfetch<TRes = unknown, TErr = unknown>(
     initResult.value.url,
     initResult.value.options
   );
-  const resolvedOptions = initResult.value.options;
+  const resolvedOptions = {
+    ...initResult.value.options,
+    includeResponse,
+  };
   const state: RequestLoopState = {
     attempt: resolvedOptions._retryAttempt ?? 0,
     context: requestContext,
