@@ -29,7 +29,9 @@ export const createApiError = async <TErr>(
   options: OkfetchOptions
 ): Promise<ApiError<TErr>> => {
   const errorDataSchema = options.apiErrorDataSchema;
+  const responseDetails = options.includeResponse ? { response } : {};
   const baseError = new ApiError<TErr>({
+    ...responseDetails,
     statusCode: response.status,
     statusText: response.statusText,
     text,
@@ -50,6 +52,7 @@ export const createApiError = async <TErr>(
   if (!shouldValidateErrorResponse(options, response.status)) {
     return new ApiError<TErr>({
       data: apiErrorDataResult.value as TErr,
+      ...responseDetails,
       statusCode: response.status,
       statusText: response.statusText,
       text,
@@ -66,6 +69,7 @@ export const createApiError = async <TErr>(
     data: (parsedApiErrorData.success
       ? parsedApiErrorData.data
       : apiErrorDataResult.value) as TErr,
+    ...responseDetails,
     statusCode: response.status,
     statusText: response.statusText,
     text,

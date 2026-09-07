@@ -112,6 +112,28 @@ describe("okfetch client package", () => {
     expect(requestHeader).toBe("yes");
   });
 
+  test("includes the response through per-call overrides", async () => {
+    const response = Response.json({ ok: true }, { status: 202 });
+    const api = createApi({
+      baseURL: "https://api.example.com",
+      endpoints: createEndpoints({
+        health: {
+          method: "GET",
+          output: z.object({ ok: z.boolean() }),
+          path: "/health",
+        },
+      }),
+      fetch: createMockFetch(() => response),
+    });
+
+    const result = await api.health({ includeResponse: true });
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      expect(result.value.data).toEqual({ ok: true });
+      expect(result.value.response).toBe(response);
+    }
+  });
+
   test("per-call overrides win over endpoint and global defaults", async () => {
     const seenHeaders: string[] = [];
     let attempts = 0;

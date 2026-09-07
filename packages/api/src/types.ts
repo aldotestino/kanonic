@@ -1,4 +1,8 @@
-import type { OkfetchError, OkfetchOptions } from "@okfetch/fetch";
+import type {
+  OkfetchError,
+  OkfetchOptions,
+  OkfetchResponse,
+} from "@okfetch/fetch";
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 import type { Result } from "better-result";
 
@@ -22,6 +26,11 @@ export type EndpointRequestOverrides = Omit<
   | "stream"
 >;
 
+type EndpointRequestDefaults = Omit<
+  EndpointRequestOverrides,
+  "includeResponse"
+>;
+
 export type EndpointDefinition = {
   method: NonNullable<OkfetchOptions["method"]>;
   path: `/${string}`;
@@ -30,7 +39,7 @@ export type EndpointDefinition = {
   output?: StandardSchemaV1;
   params?: StandardSchemaV1;
   query?: StandardSchemaV1;
-  requestOptions?: EndpointRequestOverrides;
+  requestOptions?: EndpointRequestDefaults;
   stream?: true;
 };
 
@@ -75,27 +84,42 @@ export type EndpointSuccess<TEndpoint extends EndpointDefinition> =
 export type EndpointResult<
   TEndpoint extends EndpointDefinition,
   TGlobalError,
+  TIncludeResponse extends boolean = false,
 > = Promise<
   Result<
-    EndpointSuccess<TEndpoint>,
+    TIncludeResponse extends true
+      ? OkfetchResponse<EndpointSuccess<TEndpoint>>
+      : EndpointSuccess<TEndpoint>,
     OkfetchError<EndpointError<TEndpoint, TGlobalError>>
   >
 >;
 
+type IncludeResponseValue<TOptions> = TOptions extends {
+  includeResponse?: infer TIncludeResponse extends boolean;
+}
+  ? TIncludeResponse
+  : never;
+
+type IncludesResponse<TOptions> = TOptions extends object
+  ? "includeResponse" extends keyof TOptions
+    ? IncludeResponseValue<TOptions>
+    : false
+  : false;
+
 export type ZeroOptionEndpointFunction<
   TEndpoint extends EndpointDefinition,
   TGlobalError,
-> = (
-  requestOverrides?: EndpointRequestOverrides
-) => EndpointResult<TEndpoint, TGlobalError>;
+> = <TOverrides extends EndpointRequestOverrides | undefined = undefined>(
+  requestOverrides?: TOverrides
+) => EndpointResult<TEndpoint, TGlobalError, IncludesResponse<TOverrides>>;
 
 export type OptionEndpointFunction<
   TEndpoint extends EndpointDefinition,
   TGlobalError,
-> = (
+> = <TOverrides extends EndpointRequestOverrides | undefined = undefined>(
   options: EndpointCallOptions<TEndpoint>,
-  requestOverrides?: EndpointRequestOverrides
-) => EndpointResult<TEndpoint, TGlobalError>;
+  requestOverrides?: TOverrides
+) => EndpointResult<TEndpoint, TGlobalError, IncludesResponse<TOverrides>>;
 
 export type EndpointFunction<
   TEndpoint extends EndpointDefinition,
@@ -116,7 +140,7 @@ export type CreateApiOptions<
   TTree extends EndpointTree,
   TGlobalError = unknown,
 > = Prettify<
-  EndpointRequestOverrides & {
+  EndpointRequestDefaults & {
     baseURL: string;
     endpoints: TTree;
     errorSchema?: StandardSchemaV1<unknown, TGlobalError>;

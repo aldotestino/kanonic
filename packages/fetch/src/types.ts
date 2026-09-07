@@ -115,10 +115,21 @@ export type StreamChunkValue<Options extends OkfetchOptions> =
     ? InferOutput<Options["outputSchema"]>
     : unknown;
 
+export type OkfetchResponse<TData> = {
+  data: TData;
+  response: Response;
+};
+
+type SuccessWithResponse<TData, TIncludeResponse> =
+  TIncludeResponse extends true ? OkfetchResponse<TData> : TData;
+
 export type OkfetchSuccess<
   Options extends OkfetchOptions,
   TRes = StreamChunkValue<Options>,
-> = Options["stream"] extends true ? ReadableStream<TRes> : TRes;
+> = SuccessWithResponse<
+  Options["stream"] extends true ? ReadableStream<TRes> : TRes,
+  Options["includeResponse"]
+>;
 
 export type OkfetchPluginInitInput = {
   url: string;
@@ -218,6 +229,8 @@ export type OkfetchOptions = Prettify<
     >;
     body?: unknown;
     fetch?: OkfetchFetch;
+    /** Include the underlying Response alongside successful response data. */
+    includeResponse?: boolean;
     timeout?: number;
     stream?: boolean;
     validateOutput?: boolean;

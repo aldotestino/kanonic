@@ -3,6 +3,7 @@ import type {
   FetchError,
   OkfetchError,
   OkfetchPlugin,
+  OkfetchResponse,
   TimeoutError,
 } from "@okfetch/fetch";
 import { okfetch } from "@okfetch/fetch";
@@ -51,6 +52,38 @@ test("infers a typed stream from the output schema", () => {
 test("defaults unvalidated responses to unknown", () => {
   expect(okfetch("https://example.com/health")).type.toBe<
     Promise<Result<unknown, OkfetchError<unknown>>>
+  >();
+});
+
+test("includes a typed response only when requested", () => {
+  expect(
+    okfetch("https://example.com/users/1", {
+      includeResponse: true,
+      outputSchema: userSchema,
+    })
+  ).type.toBe<
+    Promise<
+      Result<
+        OkfetchResponse<{ id: number; name: string }>,
+        OkfetchError<unknown>
+      >
+    >
+  >();
+
+  const includeResponse: boolean = Math.random() > 0.5;
+  expect(
+    okfetch("https://example.com/users/1", {
+      includeResponse,
+      outputSchema: userSchema,
+    })
+  ).type.toBe<
+    Promise<
+      Result<
+        | { id: number; name: string }
+        | OkfetchResponse<{ id: number; name: string }>,
+        OkfetchError<unknown>
+      >
+    >
   >();
 });
 

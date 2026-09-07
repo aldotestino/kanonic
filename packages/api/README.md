@@ -140,6 +140,10 @@ await api.users.get(
 );
 ```
 
+Set `includeResponse: true` in the per-call overrides to receive `{ data, response }` on success.
+The default result remains the endpoint data directly. For `ApiError`, the same flag populates
+`error.response`.
+
 ## Validation Behavior
 
 By default, `@okfetch/api` validates:

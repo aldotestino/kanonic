@@ -22,6 +22,7 @@ export class ApiError<T = unknown> extends TaggedError("ApiError")<{
   readonly statusText: string;
   readonly text?: string;
   readonly data?: unknown;
+  readonly response?: Response;
 }> {
   declare readonly data: T | undefined;
 }

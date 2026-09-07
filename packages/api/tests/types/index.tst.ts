@@ -1,5 +1,5 @@
 import { ApiService, createApi, createEndpoints } from "@okfetch/api";
-import type { OkfetchError } from "@okfetch/fetch";
+import type { OkfetchError, OkfetchResponse } from "@okfetch/fetch";
 import type { Result } from "better-result";
 import { expect, test } from "tstyche";
 import { z } from "zod/v4";
@@ -57,6 +57,41 @@ test("infers endpoint output and error types", () => {
   expect(api.users.create({ body: { name: "Ada" }, query: {} })).type.toBe<
     Promise<
       Result<{ id: number; name: string }, OkfetchError<{ code: string }>>
+    >
+  >();
+});
+
+test("includes a typed response through per-call overrides", () => {
+  expect(
+    api.users.create(
+      { body: { name: "Ada" }, query: {} },
+      { includeResponse: true }
+    )
+  ).type.toBe<
+    Promise<
+      Result<
+        OkfetchResponse<{ id: number; name: string }>,
+        OkfetchError<{ code: string }>
+      >
+    >
+  >();
+
+  expect(api.health({ includeResponse: true })).type.toBe<
+    Promise<Result<OkfetchResponse<{ ok: boolean }>, OkfetchError<unknown>>>
+  >();
+  expect(api.health({})).type.toBe<
+    Promise<Result<{ ok: boolean }, OkfetchError<unknown>>>
+  >();
+
+  const requestOverrides: Parameters<typeof api.health>[0] = {
+    includeResponse: Math.random() > 0.5,
+  };
+  expect(api.health(requestOverrides)).type.toBe<
+    Promise<
+      Result<
+        { ok: boolean } | OkfetchResponse<{ ok: boolean }>,
+        OkfetchError<unknown>
+      >
     >
   >();
 });

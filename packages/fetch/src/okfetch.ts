@@ -21,6 +21,7 @@ import type {
   InferOutput,
   OkfetchError,
   OkfetchOptions,
+  OkfetchResponse,
   OkfetchRequestContext,
   OkfetchSuccess,
   RetryableOkfetchError,
@@ -45,6 +46,13 @@ type StopLoop<TRes, TErr> = {
 type AttemptResult<TRes, TErr, Options extends OkfetchOptions> =
   | ContinueLoop
   | StopLoop<OkfetchSuccess<Options, TRes>, TErr>;
+
+const createSuccessValue = <TData>(
+  data: TData,
+  response: Response,
+  includeResponse: boolean | undefined
+): TData | OkfetchResponse<TData> =>
+  includeResponse ? { data, response } : data;
 
 const withAttempt = (
   options: OkfetchOptions,
@@ -227,26 +235,30 @@ const handleSuccessfulResponse = async <
       options.outputSchema,
       options.validateOutput ?? true
     );
-    await runOnSuccess(
-      plugins,
-      context,
-      response,
-      stream as OkfetchSuccess<Options, TRes>
+    await runOnSuccess(plugins, context, response, stream);
+    return Result.ok(
+      createSuccessValue(
+        stream,
+        response,
+        options.includeResponse
+      ) as OkfetchSuccess<Options, TRes>
     );
-    return Result.ok(stream as OkfetchSuccess<Options, TRes>);
   }
 
-  const dataResult = await parseResponseData<OkfetchSuccess<Options, TRes>>(
-    text,
-    options
-  );
+  const dataResult = await parseResponseData<TRes>(text, options);
   if (dataResult.isErr()) {
     await runOnFail(plugins, context, response, dataResult.error);
     return Result.err(dataResult.error);
   }
 
   await runOnSuccess(plugins, context, response, dataResult.value);
-  return Result.ok(dataResult.value);
+  return Result.ok(
+    createSuccessValue(
+      dataResult.value,
+      response,
+      options.includeResponse
+    ) as OkfetchSuccess<Options, TRes>
+  );
 };
 
 const executeAttempt = async <TRes, TErr, Options extends OkfetchOptions>(
@@ -326,18 +338,26 @@ const executeAttempt = async <TRes, TErr, Options extends OkfetchOptions>(
 export function okfetch<
   TOutputSchema extends StandardSchemaV1 | undefined = undefined,
   TApiErrorSchema extends StandardSchemaV1 | undefined = undefined,
+  TIncludeResponse extends boolean | undefined = undefined,
 >(
   url: string,
   options?: OkfetchOptions & {
     apiErrorDataSchema?: TApiErrorSchema;
+    includeResponse?: TIncludeResponse;
     outputSchema?: TOutputSchema;
     stream?: false;
   }
 ): Promise<
   Result<
-    TOutputSchema extends StandardSchemaV1
-      ? InferOutput<TOutputSchema>
-      : unknown,
+    TIncludeResponse extends true
+      ? OkfetchResponse<
+          TOutputSchema extends StandardSchemaV1
+            ? InferOutput<TOutputSchema>
+            : unknown
+        >
+      : TOutputSchema extends StandardSchemaV1
+        ? InferOutput<TOutputSchema>
+        : unknown,
     OkfetchError<
       TApiErrorSchema extends StandardSchemaV1
         ? InferOutput<TApiErrorSchema>
@@ -348,20 +368,30 @@ export function okfetch<
 export function okfetch<
   TOutputSchema extends StandardSchemaV1 | undefined = undefined,
   TApiErrorSchema extends StandardSchemaV1 | undefined = undefined,
+  TIncludeResponse extends boolean | undefined = undefined,
 >(
   url: string,
   options: OkfetchOptions & {
     apiErrorDataSchema?: TApiErrorSchema;
+    includeResponse?: TIncludeResponse;
     outputSchema?: TOutputSchema;
     stream: true;
   }
 ): Promise<
   Result<
-    ReadableStream<
-      TOutputSchema extends StandardSchemaV1
-        ? InferOutput<TOutputSchema>
-        : unknown
-    >,
+    TIncludeResponse extends true
+      ? OkfetchResponse<
+          ReadableStream<
+            TOutputSchema extends StandardSchemaV1
+              ? InferOutput<TOutputSchema>
+              : unknown
+          >
+        >
+      : ReadableStream<
+          TOutputSchema extends StandardSchemaV1
+            ? InferOutput<TOutputSchema>
+            : unknown
+        >,
     OkfetchError<
       TApiErrorSchema extends StandardSchemaV1
         ? InferOutput<TApiErrorSchema>
@@ -369,22 +399,43 @@ export function okfetch<
     >
   >
 >;
-export function okfetch<TRes = unknown>(
+export function okfetch<TRes = unknown, TErr = unknown>(
   url: string,
-  options: OkfetchOptions & { stream: true }
-): Promise<Result<ReadableStream<TRes>, OkfetchError<unknown>>>;
+  options: OkfetchOptions & { includeResponse: true; stream: true }
+): Promise<Result<OkfetchResponse<ReadableStream<TRes>>, OkfetchError<TErr>>>;
+export function okfetch<TRes = unknown, TErr = unknown>(
+  url: string,
+  options: OkfetchOptions & { includeResponse: boolean; stream: true }
+): Promise<
+  Result<
+    ReadableStream<TRes> | OkfetchResponse<ReadableStream<TRes>>,
+    OkfetchError<TErr>
+  >
+>;
 export function okfetch<TRes = unknown, TErr = unknown>(
   url: string,
   options: OkfetchOptions & { stream: true }
 ): Promise<Result<ReadableStream<TRes>, OkfetchError<TErr>>>;
 export function okfetch<TRes = unknown, TErr = unknown>(
   url: string,
-  options?: OkfetchOptions
+  options: OkfetchOptions & { includeResponse: true }
+): Promise<Result<OkfetchResponse<TRes>, OkfetchError<TErr>>>;
+export function okfetch<TRes = unknown, TErr = unknown>(
+  url: string,
+  options?: OkfetchOptions & { includeResponse?: false; stream?: false }
 ): Promise<Result<TRes, OkfetchError<TErr>>>;
+export function okfetch<TRes = unknown, TErr = unknown>(
+  url: string,
+  options: OkfetchOptions & { includeResponse: boolean; stream?: false }
+): Promise<Result<TRes | OkfetchResponse<TRes>, OkfetchError<TErr>>>;
+export function okfetch<TRes = unknown, TErr = unknown>(
+  url: string,
+  options: OkfetchOptions
+): Promise<Result<TRes | OkfetchResponse<TRes>, OkfetchError<TErr>>>;
 export async function okfetch<TRes = unknown, TErr = unknown>(
   url: string,
   options?: OkfetchOptions
-): Promise<Result<TRes, OkfetchError<TErr>>> {
+): Promise<Result<TRes | OkfetchResponse<TRes>, OkfetchError<TErr>>> {
   const resolvedInputOptions = options ?? {};
   const plugins = resolvedInputOptions.plugins ?? [];
   const initResult = await runPluginInit(plugins, {

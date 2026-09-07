@@ -117,6 +117,24 @@ await okfetch("/payments", {
   run and fails, the raw parsed body is kept on `data` rather than dropped.
 </Callout>
 
+## Response metadata
+
+By default, successful results contain the parsed data directly. Set `includeResponse: true` on
+an individual call to receive `{ data, response }` instead. The same flag populates
+`ApiError.response` for non-2xx responses.
+
+```ts
+const result = await okfetch("/users/1", {
+  baseURL,
+  includeResponse: true,
+  outputSchema: userSchema,
+});
+
+if (result.isOk()) {
+  console.log(result.value.data, result.value.response.status);
+}
+```
+
 ## Retries
 
 Three strategies, all configurable per request or shared through a wrapper.

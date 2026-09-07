@@ -185,6 +185,36 @@ describe("okfetch v2 plugins", () => {
     }
   });
 
+  test("includes the response on successful calls when requested", async () => {
+    const response = Response.json({ ok: true }, { status: 201 });
+    const result = await okfetch("https://example.com/todos", {
+      fetch: createMockFetch(() => response),
+      includeResponse: true,
+      outputSchema: z.object({ ok: z.boolean() }),
+    });
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      expect(result.value.data).toEqual({ ok: true });
+      expect(result.value.response).toBe(response);
+      expect(result.value.response.status).toBe(201);
+    }
+  });
+
+  test("includes the response on API errors when requested", async () => {
+    const response = Response.json({ message: "Nope" }, { status: 422 });
+    const result = await okfetch("https://example.com/todos", {
+      fetch: createMockFetch(() => response),
+      includeResponse: true,
+    });
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr() && result.error._tag === "ApiError") {
+      expect(result.error.response).toBe(response);
+      expect(result.error.response?.status).toBe(422);
+    }
+  });
+
   test("executes init hooks in order and rewrites raw url and options", async () => {
     let finalInput: OkfetchPluginInitInput | undefined;
     let requestUrl = "";
